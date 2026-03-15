@@ -1,0 +1,43 @@
+# Models whose pricing is derived from a base model.
+# The updater copies pricing from `derive_from` and applies the note.
+# These are never scraped — edit this file to add/change derivations.
+models:
+  antigravity-claude-opus-4-5-thinking:
+    derive_from: claude-opus-4.5
+    provider: google
+    note: "Antigravity not on OpenRouter. Using Claude Opus 4.5 pricing."
+
+  antigravity-claude-opus-4-6-thinking:
+    derive_from: claude-opus-4.6
+    provider: google
+    note: "Antigravity not on OpenRouter. Using Claude Opus 4.6 pricing."
+
+  antigravity-claude-sonnet-4-5:
+    derive_from: claude-sonnet-4.5
+    provider: google
+    note: "Antigravity not on OpenRouter. Using Claude Sonnet 4.5 pricing."
+
+  antigravity-claude-sonnet-4-6:
+    derive_from: claude-sonnet-4.6
+    provider: google
+    note: "Antigravity not on OpenRouter. Using Claude Sonnet 4.6 pricing."
+
+  antigravity-claude-sonnet-4-5-thinking:
+    derive_from: claude-sonnet-4.5
+    provider: google
+    note: "Antigravity not on OpenRouter. Using Claude Sonnet 4.5 pricing."
+
+  antigravity-claude-sonnet-4-6-thinking:
+    derive_from: claude-sonnet-4.6
+    provider: google
+    note: "Antigravity not on OpenRouter. Using Claude Sonnet 4.6 thinking pricing."
+
+  antigravity-gemini-3-flash:
+    derive_from: gemini-3-flash-preview
+    provider: google
+    note: "Antigravity not on OpenRouter. Using Gemini 3 Flash pricing."
+
+  antigravity-gemini-3-pro:
+    derive_from: gemini-3-pro-preview
+    provider: google
+    note: "Antigravity not on OpenRouter. Using Gemini 3 Pro pricing."

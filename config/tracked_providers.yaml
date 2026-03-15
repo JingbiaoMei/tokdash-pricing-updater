@@ -1,0 +1,21 @@
+# OpenRouter provider slugs to track.
+# Only models from these providers are scraped.
+providers:
+  - slug: openai
+    tokdash_provider: openai
+  - slug: anthropic
+    tokdash_provider: anthropic
+  - slug: google
+    tokdash_provider: google
+  - slug: moonshotai
+    tokdash_provider: moonshotai
+  - slug: minimax
+    tokdash_provider: minimax
+  - slug: z-ai
+    tokdash_provider: z-ai
+
+# OpenRouter model ID patterns to skip even if provider matches.
+skip_patterns:
+  - ":free$"
+  - ":beta$"
+  - ":extended$"

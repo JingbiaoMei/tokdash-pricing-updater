@@ -1,0 +1,13 @@
+# Aliases section of pricing_db.json.
+# Maps variant names to canonical pricing_db keys.
+# These are written verbatim into pricing_db.json["aliases"].
+# The scraper never modifies this section — edit manually.
+aliases:
+  "kimi-2.5": "kimi-k2.5"
+  "kimi2.5": "kimi-k2.5"
+  "vol-engine/kimi-2.5": "kimi-k2.5"
+  "volcengine/kimi-2.5": "kimi-k2.5"
+  "inficloud/kimi-2.5": "kimi-k2.5"
+  "kimi-coding/k2p5": "kimi-k2.5"
+  "kimi-ai/kimi-2.5": "kimi-k2.5"
+  "moonshot-ai/kimi-k2.5": "kimi-k2.5"

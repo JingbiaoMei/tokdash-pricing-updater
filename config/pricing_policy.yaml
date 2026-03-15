@@ -1,0 +1,63 @@
+# Pricing policy for the tokdash pricing DB generator.
+
+# OpenRouter pricing field mapping (OpenRouter field → tokdash field).
+field_mapping:
+  prompt: input
+  completion: output
+  input_cache_read: cache_read
+  input_cache_write: cache_write
+
+# Fallback heuristics when a source does not provide cache pricing.
+# factor is multiplied by the input rate.
+cache_fallback:
+  openai:
+    cache_read_factor: 0.50
+    cache_write_factor: 1.00
+  anthropic:
+    cache_read_factor: 0.10
+    cache_write_factor: 1.25
+  google:
+    cache_read_factor: 0.25
+    cache_write_factor: 1.00
+  default:
+    cache_read_factor: 0.10
+    cache_write_factor: 1.00
+
+# Rounding: max decimal places for per-MTok prices.
+rounding:
+  max_decimal_places: 6
+
+# Context tier: when a provider offers multiple context-length tiers
+# (e.g. Anthropic <=200K vs >200K), pick this one as the default
+# and mention alternatives in the note field.
+context_tier_preference: standard  # "standard" = lowest / default tier
+
+# Removal gating: number of consecutive scrape misses before a model
+# is even proposed for deletion (and deletions are always manual_only).
+removal:
+  min_consecutive_misses: 4
+
+# Provider-specific section comment keys for rendering.
+# Determines ordering in the final pricing_db.json.
+provider_order:
+  - key: _comment_moonshot
+    label: "=== Moonshot AI / Kimi Models ==="
+    providers: [moonshotai]
+  - key: _comment_minimax
+    label: "=== MiniMax Models ==="
+    providers: [minimax]
+  - key: _comment_glm
+    label: "=== GLM / Z.ai Models ==="
+    providers: [z-ai]
+  - key: _comment_openai
+    label: "=== OpenAI Models ==="
+    providers: [openai]
+  - key: _comment_anthropic
+    label: "=== Anthropic Claude Models ==="
+    providers: [anthropic]
+  - key: _comment_google
+    label: "=== Google Gemini Models ==="
+    providers: [google]
+  - key: _comment_antigravity
+    label: "=== Antigravity Models (mapped to base model pricing) ==="
+    providers: []  # derived_models only
