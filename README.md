@@ -84,6 +84,9 @@ else (`decimal`, `json`, `argparse`, `pathlib`, `re`, `dataclasses`).
 
 ## CLI reference
 
+All commands can be invoked as `python -m pricing_updater` or, after
+`pip install -e .`, as `pricing-updater` directly.
+
 All commands accept `--tokdash-repo PATH` before the subcommand (default:
 `../tokdash` relative to this project root).
 
@@ -178,11 +181,21 @@ Controls which OpenRouter provider slugs are scraped.
 
 ```yaml
 providers:
-  - slug: openai          # OpenRouter's provider slug
-    tokdash_provider: openai  # "provider" field in pricing_db.json
+  - slug: openai           # OpenRouter's provider slug
+    tokdash_provider: openai   # "provider" field in pricing_db.json
+  - slug: anthropic
+    tokdash_provider: anthropic
+  - slug: google
+    tokdash_provider: google
+  - slug: moonshotai
+    tokdash_provider: moonshotai
+  - slug: minimax
+    tokdash_provider: minimax
+  - slug: z-ai
+    tokdash_provider: z-ai
 
-skip_patterns:            # Regex patterns to skip matching model IDs.
-  - ":free$"              # Community/free endpoints
+skip_patterns:             # Regex patterns to skip matching model IDs.
+  - ":free$"               # Community/free endpoints
   - ":beta$"
   - ":extended$"
 ```
@@ -268,7 +281,7 @@ fields, so the fallback is rarely used.
 | openai | 0.50 | 1.00 | OpenAI caches at 50% of input |
 | anthropic | 0.10 | 1.25 | Anthropic: 10% read, 125% write |
 | google | 0.25 | 1.00 | Gemini cache pricing |
-| default | 0.10 | 1.00 | Conservative fallback |
+| default | 0.10 | 1.00 | Conservative fallback (used by moonshotai, minimax, z-ai, and any provider without an explicit entry) |
 
 ## Change classification
 
