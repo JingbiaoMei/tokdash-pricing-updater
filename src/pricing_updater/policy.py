@@ -1,73 +1,125 @@
-"""Pricing policy: official price overlay, cache fallback, rounding.
+"""Pricing policy: FX-normalized official overlay, cache fallback, rounding.
 
-This layer sits between canonicalization and rendering.  It:
-1. Overlays official prices from config/official_prices.yaml using max(openrouter, official).
-2. Fills heuristic cache rates when no source provided them.
-3. Rounds all prices to the configured precision.
+Pipeline order:
+1. Resolve family mapping (versioned IDs → family official price).
+2. Convert official prices to USD via FX rates.
+3. Apply max(openrouter, official) per field.
+4. Fill heuristic cache rates when no source provided them.
+5. Round all prices to configured precision.
 """
 
 from __future__ import annotations
 
+import fnmatch
 from decimal import ROUND_HALF_UP, Decimal
 
 from .canonicalize import CanonicalModel
 
+_PRICE_FIELDS = [
+    ("input", "input_per_mtok"),
+    ("output", "output_per_mtok"),
+    ("cache_read", "cache_read_per_mtok"),
+    ("cache_write", "cache_write_per_mtok"),
+]
+
+
+# ---------------------------------------------------------------------------
+# Family mapping
+# ---------------------------------------------------------------------------
+
+def resolve_family(
+    canonical_id: str,
+    official_prices: dict[str, dict],
+    family_map: list[dict],
+) -> dict | None:
+    """Look up official pricing for a model, checking exact key then family map.
+
+    Returns the official entry dict, or None if no match.
+    """
+    # Exact match first.
+    entry = official_prices.get(canonical_id)
+    if entry is not None:
+        return entry
+
+    # Family map: try each pattern in order.
+    for rule in family_map:
+        pattern = rule.get("pattern", "")
+        family_key = rule.get("family", "")
+        if fnmatch.fnmatch(canonical_id, pattern):
+            entry = official_prices.get(family_key)
+            if entry is not None:
+                return entry
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# FX normalization
+# ---------------------------------------------------------------------------
+
+def _to_usd(value: float | int, currency: str, fx_rates: dict[str, float]) -> Decimal:
+    """Convert a price from the given currency to USD."""
+    rate = fx_rates.get(currency)
+    if rate is None:
+        raise ValueError(
+            f"Unknown currency {currency!r} — add it to config/fx_rates.yaml"
+        )
+    return Decimal(str(value)) * Decimal(str(rate))
+
+
+# ---------------------------------------------------------------------------
+# Official overlay with FX + family
+# ---------------------------------------------------------------------------
 
 def apply_official_overlay(
     models: list[CanonicalModel],
     official_prices: dict[str, dict],
+    family_map: list[dict] | None = None,
+    fx_rates: dict[str, float] | None = None,
 ) -> list[CanonicalModel]:
-    """Apply official prices using max(openrouter, official) per field.
+    """Apply official prices using max(openrouter, official_usd) per field.
 
-    For each model that has an entry in official_prices, compare each price
-    field and keep the higher value.  This is conservative: we never
-    underestimate cost, whether the user is routed through OpenRouter or
-    hitting the provider API directly.
-
-    Args:
-        models: canonical models from OpenRouter.
-        official_prices: {model_id: {"input": float, "output": float, ...}}.
-
-    Returns:
-        Same list with prices adjusted upward where official is higher.
+    Steps per model:
+    1. Resolve official entry via exact key or family map.
+    2. Convert official prices from their native currency to USD.
+    3. For each price field, keep max(openrouter, official_usd).
     """
     if not official_prices:
         return models
 
+    fam = family_map or []
+    rates = fx_rates or {"USD": 1.0}
+
     for m in models:
-        official = official_prices.get(m.canonical_id)
+        official = resolve_family(m.canonical_id, official_prices, fam)
         if official is None:
             continue
 
-        fields = [
-            ("input", "input_per_mtok"),
-            ("output", "output_per_mtok"),
-            ("cache_read", "cache_read_per_mtok"),
-            ("cache_write", "cache_write_per_mtok"),
-        ]
-        for cfg_key, attr in fields:
+        currency = official.get("currency", "USD")
+
+        for cfg_key, attr in _PRICE_FIELDS:
             official_val = official.get(cfg_key)
             if official_val is None:
                 continue
-            official_dec = Decimal(str(official_val))
+            official_usd = _to_usd(official_val, currency, rates)
             current_dec = getattr(m, attr)
-            if official_dec > current_dec:
-                setattr(m, attr, official_dec)
+            if official_usd > current_dec:
+                setattr(m, attr, official_usd)
                 if not m.note:
                     m.note = f"Official price used ({official.get('source', 'official')})"
 
     return models
 
 
+# ---------------------------------------------------------------------------
+# Cache fallback
+# ---------------------------------------------------------------------------
+
 def apply_cache_fallback(
     models: list[CanonicalModel],
     cache_fallback: dict[str, dict[str, float]],
 ) -> list[CanonicalModel]:
-    """Fill missing cache fields with per-provider heuristics.
-
-    Only applies when the source (and official overlay) didn't provide
-    cache pricing (field is 0).
-    """
+    """Fill missing cache fields with per-provider heuristics."""
     default_fallback = cache_fallback.get("default", {})
 
     for m in models:
@@ -84,6 +136,10 @@ def apply_cache_fallback(
     return models
 
 
+# ---------------------------------------------------------------------------
+# Rounding
+# ---------------------------------------------------------------------------
+
 def apply_rounding(
     models: list[CanonicalModel],
     max_decimal_places: int = 6,
@@ -98,14 +154,20 @@ def apply_rounding(
     return models
 
 
+# ---------------------------------------------------------------------------
+# Full pipeline
+# ---------------------------------------------------------------------------
+
 def apply_policy(
     models: list[CanonicalModel],
     cache_fallback: dict[str, dict[str, float]],
     max_decimal_places: int = 6,
     official_prices: dict[str, dict] | None = None,
+    family_map: list[dict] | None = None,
+    fx_rates: dict[str, float] | None = None,
 ) -> list[CanonicalModel]:
     """Full policy pipeline: official overlay → cache fallback → rounding."""
-    models = apply_official_overlay(models, official_prices or {})
+    models = apply_official_overlay(models, official_prices or {}, family_map, fx_rates)
     models = apply_cache_fallback(models, cache_fallback)
     models = apply_rounding(models, max_decimal_places)
     return models

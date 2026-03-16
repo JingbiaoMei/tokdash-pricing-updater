@@ -2,6 +2,11 @@
 # The updater copies pricing from `derive_from` and applies the note.
 # These are never scraped — edit this file to add/change derivations.
 models:
+  k2p5:
+    derive_from: kimi-k2.5
+    provider: moonshotai
+    note: "Alias for kimi-k2.5 (k2p5 naming variation)"
+
   antigravity-claude-opus-4-5-thinking:
     derive_from: claude-opus-4.5
     provider: google

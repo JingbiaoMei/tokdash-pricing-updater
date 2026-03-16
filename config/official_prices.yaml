@@ -2,12 +2,15 @@
 # Manually maintained. These are the authoritative first-party prices.
 #
 # When both OpenRouter and official prices exist for a model, the updater
-# uses max(openrouter, official) for each field — conservative for cost tracking.
+# normalizes to USD (using config/fx_rates.yaml), then applies
+# max(openrouter, official) per field — conservative for cost tracking.
 #
-# All prices are per 1M tokens ($/MTok).
-# Fields: input, output, cache_read, cache_write
+# All prices are per 1M tokens in the currency specified.
+# Fields: input, output, cache_read, cache_write, currency
 # Omit a field to fall back to OpenRouter's value for that field.
+# Currency defaults to USD if omitted.
 #
+# Versioned variants inherit via config/official_family_map.yaml.
 # Source URLs are required for auditability.
 
 models:
@@ -15,6 +18,7 @@ models:
   # Cache: 5-minute write = 1.25× input, read = 0.1× input
   claude-opus-4.6:
     provider: anthropic
+    currency: USD
     input: 5.00
     output: 25.00
     cache_read: 0.50
@@ -23,6 +27,7 @@ models:
 
   claude-opus-4.5:
     provider: anthropic
+    currency: USD
     input: 5.00
     output: 25.00
     cache_read: 0.50
@@ -31,6 +36,7 @@ models:
 
   claude-opus-4.1:
     provider: anthropic
+    currency: USD
     input: 15.00
     output: 75.00
     cache_read: 1.50
@@ -39,6 +45,7 @@ models:
 
   claude-opus-4:
     provider: anthropic
+    currency: USD
     input: 15.00
     output: 75.00
     cache_read: 1.50
@@ -47,6 +54,7 @@ models:
 
   claude-sonnet-4.6:
     provider: anthropic
+    currency: USD
     input: 3.00
     output: 15.00
     cache_read: 0.30
@@ -55,6 +63,7 @@ models:
 
   claude-sonnet-4.5:
     provider: anthropic
+    currency: USD
     input: 3.00
     output: 15.00
     cache_read: 0.30
@@ -63,6 +72,7 @@ models:
 
   claude-sonnet-4:
     provider: anthropic
+    currency: USD
     input: 3.00
     output: 15.00
     cache_read: 0.30
@@ -71,6 +81,7 @@ models:
 
   claude-haiku-4.5:
     provider: anthropic
+    currency: USD
     input: 1.00
     output: 5.00
     cache_read: 0.10
@@ -79,6 +90,7 @@ models:
 
   claude-3.5-haiku:
     provider: anthropic
+    currency: USD
     input: 0.80
     output: 4.00
     cache_read: 0.08
@@ -87,6 +99,7 @@ models:
 
   claude-3.5-sonnet:
     provider: anthropic
+    currency: USD
     input: 6.00
     output: 30.00
     cache_read: 0.60
@@ -95,6 +108,7 @@ models:
 
   claude-3-haiku:
     provider: anthropic
+    currency: USD
     input: 0.25
     output: 1.25
     cache_read: 0.03
@@ -102,9 +116,12 @@ models:
     source: "platform.claude.com/docs/en/about-claude/pricing"
 
   # ─── DeepSeek (https://api-docs.deepseek.com/quick_start/pricing) ───
-  # All DeepSeek models: input=cache miss, cache_read=cache hit (10% of input)
+  # Official page lists deepseek-chat and deepseek-reasoner at same price.
+  # Versioned variants (deepseek-chat-v3.1, deepseek-r1-0528, etc.) inherit
+  # via official_family_map.yaml.
   deepseek-chat:
     provider: deepseek
+    currency: USD
     input: 0.28
     output: 0.42
     cache_read: 0.028
@@ -113,6 +130,7 @@ models:
 
   deepseek-r1:
     provider: deepseek
+    currency: USD
     input: 0.28
     output: 0.42
     cache_read: 0.028
@@ -120,13 +138,18 @@ models:
     source: "api-docs.deepseek.com/quick_start/pricing"
     note: "deepseek-reasoner pricing same as deepseek-chat"
 
-  # ─── Chinese providers: fill from official pricing pages ───
-  # GLM / Z.ai:  https://bigmodel.cn/pricing or https://open.bigmodel.cn/pricing
-  # Kimi / Moonshot: https://platform.moonshot.cn/pricing
-  # MiniMax: https://platform.minimaxi.com/document/Price
-  # Xiaomi: https://dev.mi.com/xiaomiai/productDetail?type=2
-  #
-  # These are currently EMPTY — fill from official sources.
-  # OpenRouter prices for z-ai, moonshotai, minimax, xiaomi are from the
-  # official provider (no third-party resellers), so OpenRouter is used
-  # as-is until official prices are added here.
+  # ─── Z.ai / GLM (https://bigmodel.cn/pricing) ───
+  # Prices in CNY (¥), converted to USD via fx_rates.yaml.
+  # GLM-4 series: input ¥1/MTok, output ¥1/MTok (open-source models, may vary)
+  # Fill from official page — below are placeholders from known public pricing.
+
+  # ─── MiniMax (https://platform.minimaxi.com/document/Price) ───
+  # Prices in CNY (¥).
+  # Fill from official page.
+
+  # ─── Moonshot / Kimi (https://platform.moonshot.cn/pricing) ───
+  # Prices in CNY (¥).
+  # Fill from official page.
+
+  # ─── Xiaomi (no stable pricing page found) ───
+  # OpenRouter is the only known source.
