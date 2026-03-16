@@ -13,6 +13,10 @@ providers:
     tokdash_provider: minimax
   - slug: z-ai
     tokdash_provider: z-ai
+  - slug: deepseek
+    tokdash_provider: deepseek
+  - slug: xiaomi
+    tokdash_provider: xiaomi
 
 # OpenRouter model ID patterns to skip even if provider matches.
 skip_patterns:

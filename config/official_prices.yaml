@@ -1,0 +1,132 @@
+# Official prices from provider websites / API docs.
+# Manually maintained. These are the authoritative first-party prices.
+#
+# When both OpenRouter and official prices exist for a model, the updater
+# uses max(openrouter, official) for each field — conservative for cost tracking.
+#
+# All prices are per 1M tokens ($/MTok).
+# Fields: input, output, cache_read, cache_write
+# Omit a field to fall back to OpenRouter's value for that field.
+#
+# Source URLs are required for auditability.
+
+models:
+  # ─── Anthropic (https://platform.claude.com/docs/en/about-claude/pricing) ───
+  # Cache: 5-minute write = 1.25× input, read = 0.1× input
+  claude-opus-4.6:
+    provider: anthropic
+    input: 5.00
+    output: 25.00
+    cache_read: 0.50
+    cache_write: 6.25
+    source: "platform.claude.com/docs/en/about-claude/pricing"
+
+  claude-opus-4.5:
+    provider: anthropic
+    input: 5.00
+    output: 25.00
+    cache_read: 0.50
+    cache_write: 6.25
+    source: "platform.claude.com/docs/en/about-claude/pricing"
+
+  claude-opus-4.1:
+    provider: anthropic
+    input: 15.00
+    output: 75.00
+    cache_read: 1.50
+    cache_write: 18.75
+    source: "platform.claude.com/docs/en/about-claude/pricing"
+
+  claude-opus-4:
+    provider: anthropic
+    input: 15.00
+    output: 75.00
+    cache_read: 1.50
+    cache_write: 18.75
+    source: "platform.claude.com/docs/en/about-claude/pricing"
+
+  claude-sonnet-4.6:
+    provider: anthropic
+    input: 3.00
+    output: 15.00
+    cache_read: 0.30
+    cache_write: 3.75
+    source: "platform.claude.com/docs/en/about-claude/pricing"
+
+  claude-sonnet-4.5:
+    provider: anthropic
+    input: 3.00
+    output: 15.00
+    cache_read: 0.30
+    cache_write: 3.75
+    source: "platform.claude.com/docs/en/about-claude/pricing"
+
+  claude-sonnet-4:
+    provider: anthropic
+    input: 3.00
+    output: 15.00
+    cache_read: 0.30
+    cache_write: 3.75
+    source: "platform.claude.com/docs/en/about-claude/pricing"
+
+  claude-haiku-4.5:
+    provider: anthropic
+    input: 1.00
+    output: 5.00
+    cache_read: 0.10
+    cache_write: 1.25
+    source: "platform.claude.com/docs/en/about-claude/pricing"
+
+  claude-3.5-haiku:
+    provider: anthropic
+    input: 0.80
+    output: 4.00
+    cache_read: 0.08
+    cache_write: 1.00
+    source: "platform.claude.com/docs/en/about-claude/pricing"
+
+  claude-3.5-sonnet:
+    provider: anthropic
+    input: 6.00
+    output: 30.00
+    cache_read: 0.60
+    cache_write: 7.50
+    source: "platform.claude.com/docs/en/about-claude/pricing"
+
+  claude-3-haiku:
+    provider: anthropic
+    input: 0.25
+    output: 1.25
+    cache_read: 0.03
+    cache_write: 0.30
+    source: "platform.claude.com/docs/en/about-claude/pricing"
+
+  # ─── DeepSeek (https://api-docs.deepseek.com/quick_start/pricing) ───
+  # All DeepSeek models: input=cache miss, cache_read=cache hit (10% of input)
+  deepseek-chat:
+    provider: deepseek
+    input: 0.28
+    output: 0.42
+    cache_read: 0.028
+    cache_write: 0.28
+    source: "api-docs.deepseek.com/quick_start/pricing"
+
+  deepseek-r1:
+    provider: deepseek
+    input: 0.28
+    output: 0.42
+    cache_read: 0.028
+    cache_write: 0.28
+    source: "api-docs.deepseek.com/quick_start/pricing"
+    note: "deepseek-reasoner pricing same as deepseek-chat"
+
+  # ─── Chinese providers: fill from official pricing pages ───
+  # GLM / Z.ai:  https://bigmodel.cn/pricing or https://open.bigmodel.cn/pricing
+  # Kimi / Moonshot: https://platform.moonshot.cn/pricing
+  # MiniMax: https://platform.minimaxi.com/document/Price
+  # Xiaomi: https://dev.mi.com/xiaomiai/productDetail?type=2
+  #
+  # These are currently EMPTY — fill from official sources.
+  # OpenRouter prices for z-ai, moonshotai, minimax, xiaomi are from the
+  # official provider (no third-party resellers), so OpenRouter is used
+  # as-is until official prices are added here.

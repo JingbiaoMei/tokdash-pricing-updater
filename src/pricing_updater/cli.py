@@ -38,7 +38,8 @@ def _load_config():
     manual_cfg = _load_yaml("manual_models.yaml")
     derived_cfg = _load_yaml("derived_models.yaml")
     policy_cfg = _load_yaml("pricing_policy.yaml")
-    return providers_cfg, aliases_cfg, manual_cfg, derived_cfg, policy_cfg
+    official_cfg = _load_yaml("official_prices.yaml")
+    return providers_cfg, aliases_cfg, manual_cfg, derived_cfg, policy_cfg, official_cfg
 
 
 # ---------------------------------------------------------------------------
@@ -70,11 +71,17 @@ def _step_canonicalize(scraped, provider_map):
     return canonical
 
 
-def _step_policy(canonical, policy_cfg):
+def _step_policy(canonical, policy_cfg, official_cfg):
     from .policy import apply_policy
     cache_fb = policy_cfg.get("cache_fallback", {})
     max_dp = policy_cfg.get("rounding", {}).get("max_decimal_places", 6)
-    return apply_policy(canonical, cache_fb, max_dp)
+    official_prices = official_cfg.get("models", {})
+
+    n_official = sum(1 for m in canonical if m.canonical_id in official_prices)
+    if n_official:
+        print(f"  -> {n_official} models have official price overlay")
+
+    return apply_policy(canonical, cache_fb, max_dp, official_prices)
 
 
 def _step_render(
@@ -139,12 +146,12 @@ def _step_diff(current_db, proposed_db, manual_cfg, derived_cfg, state_dir, poli
 
 def cmd_scrape(args):
     """Fetch from sources and save raw + canonical snapshots."""
-    providers_cfg, aliases_cfg, manual_cfg, derived_cfg, policy_cfg = _load_config()
+    providers_cfg, aliases_cfg, manual_cfg, derived_cfg, policy_cfg, official_cfg = _load_config()
     output_dir = _project_root() / "output"
 
     scraped, provider_map = _step_scrape(providers_cfg, policy_cfg, output_dir)
     canonical = _step_canonicalize(scraped, provider_map)
-    canonical = _step_policy(canonical, policy_cfg)
+    canonical = _step_policy(canonical, policy_cfg, official_cfg)
 
     # Save canonical snapshot.
     from .render_tokdash_db import _decimal_to_float
@@ -167,7 +174,7 @@ def cmd_scrape(args):
 
 def cmd_diff(args):
     """Scrape, render, and diff against current tokdash pricing_db."""
-    providers_cfg, aliases_cfg, manual_cfg, derived_cfg, policy_cfg = _load_config()
+    providers_cfg, aliases_cfg, manual_cfg, derived_cfg, policy_cfg, official_cfg = _load_config()
     output_dir = _project_root() / "output"
     state_dir = _project_root() / "state"
 
@@ -175,7 +182,7 @@ def cmd_diff(args):
 
     scraped, provider_map = _step_scrape(providers_cfg, policy_cfg, output_dir)
     canonical = _step_canonicalize(scraped, provider_map)
-    canonical = _step_policy(canonical, policy_cfg)
+    canonical = _step_policy(canonical, policy_cfg, official_cfg)
 
     proposed_db = _step_render(
         canonical, manual_cfg, derived_cfg, aliases_cfg, policy_cfg, current_db,
@@ -197,7 +204,7 @@ def cmd_diff(args):
 
 def cmd_propose(args):
     """Full interactive pipeline: scrape -> diff -> review -> write proposed DB."""
-    providers_cfg, aliases_cfg, manual_cfg, derived_cfg, policy_cfg = _load_config()
+    providers_cfg, aliases_cfg, manual_cfg, derived_cfg, policy_cfg, official_cfg = _load_config()
     output_dir = _project_root() / "output"
     state_dir = _project_root() / "state"
 
@@ -205,7 +212,7 @@ def cmd_propose(args):
 
     scraped, provider_map = _step_scrape(providers_cfg, policy_cfg, output_dir)
     canonical = _step_canonicalize(scraped, provider_map)
-    canonical = _step_policy(canonical, policy_cfg)
+    canonical = _step_policy(canonical, policy_cfg, official_cfg)
 
     proposed_db = _step_render(
         canonical, manual_cfg, derived_cfg, aliases_cfg, policy_cfg, current_db,
@@ -244,7 +251,7 @@ def cmd_propose(args):
 
 def cmd_auto(args):
     """CI mode: scrape -> diff -> auto-approve safe_add -> write + optionally PR."""
-    providers_cfg, aliases_cfg, manual_cfg, derived_cfg, policy_cfg = _load_config()
+    providers_cfg, aliases_cfg, manual_cfg, derived_cfg, policy_cfg, official_cfg = _load_config()
     output_dir = _project_root() / "output"
     state_dir = _project_root() / "state"
 
@@ -252,7 +259,7 @@ def cmd_auto(args):
 
     scraped, provider_map = _step_scrape(providers_cfg, policy_cfg, output_dir)
     canonical = _step_canonicalize(scraped, provider_map)
-    canonical = _step_policy(canonical, policy_cfg)
+    canonical = _step_policy(canonical, policy_cfg, official_cfg)
 
     proposed_db = _step_render(
         canonical, manual_cfg, derived_cfg, aliases_cfg, policy_cfg, current_db,

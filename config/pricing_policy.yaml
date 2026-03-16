@@ -19,6 +19,9 @@ cache_fallback:
   google:
     cache_read_factor: 0.25
     cache_write_factor: 1.00
+  deepseek:
+    cache_read_factor: 0.10
+    cache_write_factor: 1.00
   default:
     cache_read_factor: 0.10
     cache_write_factor: 1.00
@@ -55,9 +58,15 @@ provider_order:
   - key: _comment_anthropic
     label: "=== Anthropic Claude Models ==="
     providers: [anthropic]
+  - key: _comment_deepseek
+    label: "=== DeepSeek Models ==="
+    providers: [deepseek]
   - key: _comment_google
     label: "=== Google Gemini Models ==="
     providers: [google]
+  - key: _comment_xiaomi
+    label: "=== Xiaomi Models ==="
+    providers: [xiaomi]
   - key: _comment_antigravity
     label: "=== Antigravity Models (mapped to base model pricing) ==="
     providers: []  # derived_models only

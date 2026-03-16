@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 from pricing_updater.canonicalize import CanonicalModel
-from pricing_updater.policy import apply_policy
+from pricing_updater.policy import apply_policy, apply_official_overlay
 
 
 def _make_canonical(cid, provider, inp, out, cr=Decimal("0"), cw=Decimal("0")):
@@ -50,3 +50,82 @@ def test_rounding():
     # Should be rounded to 6 decimal places.
     assert str(result[0].input_per_mtok) == "1.123457"
     assert str(result[0].output_per_mtok) == "2.987654"
+
+
+# --- Official price overlay tests ---
+
+def test_official_overlay_uses_max():
+    """When official price is higher than OpenRouter, use official."""
+    m = _make_canonical("deepseek-chat", "deepseek", "0.32", "0.89")
+    official = {
+        "deepseek-chat": {
+            "input": 0.28,  # lower than OR → keep OR's 0.32
+            "output": 1.10,  # higher than OR → use 1.10
+        },
+    }
+    result = apply_official_overlay([m], official)
+    assert float(result[0].input_per_mtok) == 0.32   # kept OpenRouter (higher)
+    assert float(result[0].output_per_mtok) == 1.10   # used official (higher)
+
+
+def test_official_overlay_keeps_openrouter_when_higher():
+    """When OpenRouter price is higher than official, keep OpenRouter."""
+    m = _make_canonical("deepseek-chat", "deepseek", "0.32", "0.89")
+    official = {
+        "deepseek-chat": {
+            "input": 0.28,   # official lower
+            "output": 0.42,  # official lower
+        },
+    }
+    result = apply_official_overlay([m], official)
+    assert float(result[0].input_per_mtok) == 0.32  # kept OR
+    assert float(result[0].output_per_mtok) == 0.89  # kept OR
+
+
+def test_official_overlay_fills_cache_from_official():
+    """When OpenRouter has no cache pricing but official does, use official."""
+    m = _make_canonical("deepseek-chat", "deepseek", "0.32", "0.89",
+                        cr=Decimal("0"), cw=Decimal("0"))
+    official = {
+        "deepseek-chat": {
+            "cache_read": 0.028,
+            "cache_write": 0.28,
+        },
+    }
+    result = apply_official_overlay([m], official)
+    assert float(result[0].cache_read_per_mtok) == 0.028
+    assert float(result[0].cache_write_per_mtok) == 0.28
+
+
+def test_official_overlay_no_match_is_noop():
+    """Models without official entries are unchanged."""
+    m = _make_canonical("some-model", "openai", "1.00", "2.00")
+    result = apply_official_overlay([m], {"other-model": {"input": 5.0}})
+    assert float(result[0].input_per_mtok) == 1.00
+
+
+def test_full_pipeline_with_official():
+    """End-to-end: official overlay + cache fallback + rounding."""
+    m = _make_canonical("deepseek-chat", "deepseek", "0.32", "0.89",
+                        cr=Decimal("0"), cw=Decimal("0"))
+    cache_fb = {
+        "deepseek": {"cache_read_factor": 0.10, "cache_write_factor": 1.00},
+        "default": {"cache_read_factor": 0.10, "cache_write_factor": 1.00},
+    }
+    official = {
+        "deepseek-chat": {
+            "input": 0.28,
+            "output": 0.42,
+            "cache_read": 0.028,
+            "cache_write": 0.28,
+        },
+    }
+    result = apply_policy([m], cache_fb, official_prices=official)
+    # input: max(0.32, 0.28) = 0.32 (OR higher)
+    assert float(result[0].input_per_mtok) == 0.32
+    # output: max(0.89, 0.42) = 0.89 (OR higher)
+    assert float(result[0].output_per_mtok) == 0.89
+    # cache_read: max(0, 0.028) = 0.028 (official provides it)
+    assert float(result[0].cache_read_per_mtok) == 0.028
+    # cache_write: max(0, 0.28) = 0.28 (official provides it)
+    assert float(result[0].cache_write_per_mtok) == 0.28
