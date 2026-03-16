@@ -15,7 +15,7 @@
 
 models:
   # ─── Anthropic (https://platform.claude.com/docs/en/about-claude/pricing) ───
-  # Cache: 5-minute write = 1.25× input, read = 0.1× input
+  # Cache: 5-minute write = 1.25x input, read = 0.1x input
   claude-opus-4.6:
     provider: anthropic
     currency: USD
@@ -116,9 +116,7 @@ models:
     source: "platform.claude.com/docs/en/about-claude/pricing"
 
   # ─── DeepSeek (https://api-docs.deepseek.com/quick_start/pricing) ───
-  # Official page lists deepseek-chat and deepseek-reasoner at same price.
-  # Versioned variants (deepseek-chat-v3.1, deepseek-r1-0528, etc.) inherit
-  # via official_family_map.yaml.
+  # Versioned variants inherit via official_family_map.yaml.
   deepseek-chat:
     provider: deepseek
     currency: USD
@@ -138,18 +136,182 @@ models:
     source: "api-docs.deepseek.com/quick_start/pricing"
     note: "deepseek-reasoner pricing same as deepseek-chat"
 
-  # ─── Z.ai / GLM (https://bigmodel.cn/pricing) ───
-  # Prices in CNY (¥), converted to USD via fx_rates.yaml.
-  # GLM-4 series: input ¥1/MTok, output ¥1/MTok (open-source models, may vary)
-  # Fill from official page — below are placeholders from known public pricing.
+  # ─── Z.ai / GLM (https://docs.z.ai/guides/overview/pricing) ───
+  # Official English pricing page, all USD.
+  glm-5:
+    provider: z-ai
+    currency: USD
+    input: 1.00
+    output: 3.20
+    cache_read: 0.20
+    source: "docs.z.ai/guides/overview/pricing"
 
-  # ─── MiniMax (https://platform.minimaxi.com/document/Price) ───
-  # Prices in CNY (¥).
-  # Fill from official page.
+  glm-5-turbo:
+    provider: z-ai
+    currency: USD
+    input: 1.20
+    output: 4.00
+    cache_read: 0.24
+    source: "docs.z.ai/guides/overview/pricing"
 
-  # ─── Moonshot / Kimi (https://platform.moonshot.cn/pricing) ───
-  # Prices in CNY (¥).
-  # Fill from official page.
+  glm-4.7:
+    provider: z-ai
+    currency: USD
+    input: 0.60
+    output: 2.20
+    cache_read: 0.11
+    source: "docs.z.ai/guides/overview/pricing"
 
-  # ─── Xiaomi (no stable pricing page found) ───
-  # OpenRouter is the only known source.
+  glm-4.7-flash:
+    provider: z-ai
+    currency: USD
+    input: 0.00
+    output: 0.00
+    source: "docs.z.ai/guides/overview/pricing"
+    note: "Free tier model"
+
+  glm-4.6:
+    provider: z-ai
+    currency: USD
+    input: 0.60
+    output: 2.20
+    cache_read: 0.11
+    source: "docs.z.ai/guides/overview/pricing"
+
+  glm-4.6v:
+    provider: z-ai
+    currency: USD
+    input: 0.30
+    output: 0.90
+    cache_read: 0.05
+    source: "docs.z.ai/guides/overview/pricing"
+
+  glm-4.5:
+    provider: z-ai
+    currency: USD
+    input: 0.60
+    output: 2.20
+    cache_read: 0.11
+    source: "docs.z.ai/guides/overview/pricing"
+
+  glm-4.5v:
+    provider: z-ai
+    currency: USD
+    input: 0.60
+    output: 1.80
+    cache_read: 0.11
+    source: "docs.z.ai/guides/overview/pricing"
+
+  glm-4.5-air:
+    provider: z-ai
+    currency: USD
+    input: 0.20
+    output: 1.10
+    cache_read: 0.03
+    source: "docs.z.ai/guides/overview/pricing"
+
+  glm-4-32b:
+    provider: z-ai
+    currency: USD
+    input: 0.10
+    output: 0.10
+    source: "docs.z.ai/guides/overview/pricing"
+
+  # ─── MiniMax (https://platform.minimax.io/docs/guides/pricing-paygo) ───
+  # Official English docs, all USD.
+  minimax-m2.5:
+    provider: minimax
+    currency: USD
+    input: 0.30
+    output: 1.20
+    cache_read: 0.03
+    cache_write: 0.375
+    source: "platform.minimax.io/docs/guides/pricing-paygo"
+
+  minimax-m2.1:
+    provider: minimax
+    currency: USD
+    input: 0.30
+    output: 1.20
+    cache_read: 0.03
+    cache_write: 0.375
+    source: "platform.minimax.io/docs/guides/pricing-paygo"
+
+  minimax-m2:
+    provider: minimax
+    currency: USD
+    input: 0.30
+    output: 1.20
+    cache_read: 0.03
+    cache_write: 0.375
+    source: "platform.minimax.io/docs/guides/pricing-paygo"
+
+  minimax-m2-her:
+    provider: minimax
+    currency: USD
+    input: 0.30
+    output: 1.20
+    source: "platform.minimax.io/docs/guides/pricing-paygo"
+    note: "No prompt caching support"
+
+  minimax-01:
+    provider: minimax
+    currency: USD
+    input: 0.20
+    output: 1.10
+    source: "platform.minimax.io/docs/guides/pricing-paygo"
+    note: "Legacy model, pricing from official docs"
+
+  minimax-m1:
+    provider: minimax
+    currency: USD
+    input: 0.40
+    output: 2.20
+    source: "platform.minimax.io/docs/guides/pricing-paygo"
+
+  # ─── Moonshot / Kimi (https://platform.moonshot.ai/docs/pricing/chat) ───
+  # Sourced from costgoat.com aggregator (official SPA not fetchable).
+  # All USD. Automatic caching at $0.15/MTok across all K2 models.
+  kimi-k2.5:
+    provider: moonshotai
+    currency: USD
+    input: 0.60
+    output: 3.00
+    cache_read: 0.15
+    source: "costgoat.com/pricing/kimi-api"
+    note: "Official pricing via aggregator (platform.moonshot.ai is SPA)"
+
+  kimi-k2-thinking:
+    provider: moonshotai
+    currency: USD
+    input: 0.60
+    output: 2.50
+    cache_read: 0.15
+    source: "costgoat.com/pricing/kimi-api"
+
+  kimi-k2-0905:
+    provider: moonshotai
+    currency: USD
+    input: 0.60
+    output: 2.50
+    cache_read: 0.15
+    source: "costgoat.com/pricing/kimi-api"
+
+  kimi-k2:
+    provider: moonshotai
+    currency: USD
+    input: 0.60
+    output: 2.50
+    cache_read: 0.15
+    source: "costgoat.com/pricing/kimi-api"
+    note: "kimi-k2-0711 pricing"
+
+  # ─── Xiaomi (https://platform.xiaomimimo.com) ───
+  # Sourced from OpenRouter and third-party aggregators.
+  mimo-v2-flash:
+    provider: xiaomi
+    currency: USD
+    input: 0.10
+    output: 0.30
+    source: "news.aibase.com/news/23747"
+    note: "API as low as $0.1/MTok input per official announcement"

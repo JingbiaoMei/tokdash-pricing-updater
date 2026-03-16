@@ -2,18 +2,15 @@
 #
 # When a model's canonical_id is not found directly in official_prices.yaml,
 # the overlay checks this map for a family match.  Entries are tried in order:
-# first exact match, then prefix match.
+# first exact match on official_prices, then pattern match here.
 #
 # Format:
-#   - pattern: "prefix-*"       → prefix glob (matches deepseek-chat-v3.1, deepseek-chat-v3-0324, etc.)
+#   - pattern: "prefix-*"       → prefix glob
 #   - family:  "deepseek-chat"  → key into official_prices.yaml
-#
-# Only needed when the official provider charges one price for a whole family
-# but OpenRouter lists dated/variant sub-models.
 
 families:
   # DeepSeek: official page lists deepseek-chat and deepseek-reasoner only.
-  # All chat variants share deepseek-chat pricing.
+  # All chat/v3 variants share deepseek-chat pricing.
   # All reasoning variants share deepseek-r1 pricing.
   - pattern: "deepseek-chat-*"
     family: deepseek-chat
@@ -25,3 +22,11 @@ families:
   # Anthropic: sonnet 3.7 variants → sonnet 4 family pricing (same rates)
   - pattern: "claude-3.7-sonnet*"
     family: claude-sonnet-4
+
+  # GLM: exacto variants inherit base model pricing
+  - pattern: "glm-4.6:*"
+    family: glm-4.6
+
+  # Kimi: exacto variants inherit base model pricing
+  - pattern: "kimi-k2-0905:*"
+    family: kimi-k2-0905
