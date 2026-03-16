@@ -2,39 +2,40 @@
 
 Attempts to scrape pricing from each provider's official page.
 Results are merged into official_prices for the overlay step.
-Failures are non-fatal — the YAML config serves as fallback.
+Failures are non-fatal — config/official_prices.yaml serves as fallback.
 """
 
 from __future__ import annotations
-
-from .base import ScrapedModel
 
 
 def fetch_all_official(timeout: int = 30) -> dict[str, dict]:
     """Fetch from all official sources, return {model_id: price_dict}.
 
-    Each returned dict has: input, output, cache_read, cache_write,
-    currency, source.  Currency is always USD (converted at source).
+    Each returned dict has: provider, currency, input, output, and
+    optionally cache_read, cache_write, source.
 
     This is additive — it only returns models it successfully scraped.
     Models not returned here fall back to config/official_prices.yaml.
     """
     results: dict[str, dict] = {}
 
-    # DeepSeek (English, stable)
-    results.update(_fetch_deepseek(timeout))
+    adapters = [
+        ("DeepSeek", _fetch_deepseek),
+        ("Z.ai/GLM", _fetch_zai),
+        ("MiniMax", _fetch_minimax),
+        ("Moonshot/Kimi", _fetch_moonshot),
+        ("Xiaomi/MiMo", _fetch_xiaomi),
+    ]
 
-    # Chinese providers — stubs for future implementation.
-    # These require either:
-    #   - Browser automation for SPA rendering, or
-    #   - Stable API endpoints (not yet identified), or
-    #   - Manual config/official_prices.yaml entries (current approach)
-    #
-    # When implemented, each should:
-    #   1. Fetch the pricing page
-    #   2. Parse model names and prices in native currency
-    #   3. Convert to USD using fx_rates
-    #   4. Return the same dict format
+    for name, fetcher in adapters:
+        try:
+            fetched = fetcher(timeout)
+        except Exception as e:
+            print(f"  WARNING: {name} official fetch failed: {e}")
+            fetched = {}
+        if fetched:
+            print(f"  {name}: {len(fetched)} models")
+            results.update(fetched)
 
     return results
 
@@ -43,9 +44,8 @@ def _fetch_deepseek(timeout: int) -> dict[str, dict]:
     from .official_deepseek import fetch_deepseek_official
 
     scraped = fetch_deepseek_official(timeout)
-    out = {}
-    for m in scraped:
-        out[m.short_id] = {
+    return {
+        m.short_id: {
             "provider": "deepseek",
             "currency": "USD",
             "input": float(m.input_per_mtok),
@@ -54,4 +54,25 @@ def _fetch_deepseek(timeout: int) -> dict[str, dict]:
             "cache_write": float(m.cache_write_per_mtok) if m.cache_write_per_mtok else None,
             "source": m.source_url,
         }
-    return out
+        for m in scraped
+    }
+
+
+def _fetch_zai(timeout: int) -> dict[str, dict]:
+    from .official_zai import fetch_zai_official
+    return fetch_zai_official(timeout)
+
+
+def _fetch_minimax(timeout: int) -> dict[str, dict]:
+    from .official_minimax import fetch_minimax_official
+    return fetch_minimax_official(timeout)
+
+
+def _fetch_moonshot(timeout: int) -> dict[str, dict]:
+    from .official_moonshot import fetch_moonshot_official
+    return fetch_moonshot_official(timeout)
+
+
+def _fetch_xiaomi(timeout: int) -> dict[str, dict]:
+    from .official_xiaomi import fetch_xiaomi_official
+    return fetch_xiaomi_official(timeout)

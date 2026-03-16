@@ -270,7 +270,9 @@ models:
     source: "platform.minimax.io/docs/guides/pricing-paygo"
 
   # ─── Moonshot / Kimi (https://platform.moonshot.ai/docs/pricing/chat) ───
-  # Sourced from costgoat.com aggregator (official SPA not fetchable).
+  # Official page is a Next.js SPA — live scraper in official_moonshot.py
+  # attempts to fetch it each run; these YAML values are the fallback.
+  # Prices cross-referenced from costgoat.com/pricing/kimi-api.
   # All USD. Automatic caching at $0.15/MTok across all K2 models.
   kimi-k2.5:
     provider: moonshotai
@@ -278,8 +280,8 @@ models:
     input: 0.60
     output: 3.00
     cache_read: 0.15
-    source: "costgoat.com/pricing/kimi-api"
-    note: "Official pricing via aggregator (platform.moonshot.ai is SPA)"
+    source: "platform.moonshot.ai/docs/pricing/chat"
+    note: "YAML fallback — official SPA not fetchable; verified via costgoat.com"
 
   kimi-k2-thinking:
     provider: moonshotai
@@ -287,7 +289,7 @@ models:
     input: 0.60
     output: 2.50
     cache_read: 0.15
-    source: "costgoat.com/pricing/kimi-api"
+    source: "platform.moonshot.ai/docs/pricing/chat"
 
   kimi-k2-0905:
     provider: moonshotai
@@ -295,7 +297,7 @@ models:
     input: 0.60
     output: 2.50
     cache_read: 0.15
-    source: "costgoat.com/pricing/kimi-api"
+    source: "platform.moonshot.ai/docs/pricing/chat"
 
   kimi-k2:
     provider: moonshotai
@@ -303,15 +305,17 @@ models:
     input: 0.60
     output: 2.50
     cache_read: 0.15
-    source: "costgoat.com/pricing/kimi-api"
+    source: "platform.moonshot.ai/docs/pricing/chat"
     note: "kimi-k2-0711 pricing"
 
   # ─── Xiaomi (https://platform.xiaomimimo.com) ───
-  # Sourced from OpenRouter and third-party aggregators.
+  # Official platform exists but may be a SPA; live scraper in
+  # official_xiaomi.py attempts to fetch it each run.
+  # YAML fallback price from Xiaomi's official product announcement.
   mimo-v2-flash:
     provider: xiaomi
     currency: USD
     input: 0.10
     output: 0.30
-    source: "news.aibase.com/news/23747"
-    note: "API as low as $0.1/MTok input per official announcement"
+    source: "platform.xiaomimimo.com"
+    note: "YAML fallback — verified $0.1/$0.3 from official Xiaomi announcement"

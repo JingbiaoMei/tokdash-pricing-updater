@@ -13,8 +13,8 @@ Tokdash's `pricing_db.json` is not a direct mirror of any provider's model list.
 It is a **compatibility layer** used by `PricingDatabase` at runtime, containing:
 
 - **Scraped models** from OpenRouter (the majority).
-- **Manual models** that don't exist on any source (`gpt-5.3-codex`, `k2p5`).
-- **Derived models** whose pricing copies a base model (`antigravity-*`).
+- **Manual models** that don't exist on any source (`gpt-5.3-codex`).
+- **Derived models** whose pricing copies a base model (`antigravity-*`, `k2p5`).
 - **Aliases** that map variant names to canonical keys for runtime lookup.
 
 A naive scraper that mirrors a source directly would generate false removals and
@@ -24,34 +24,45 @@ concern separate.
 ## Architecture
 
 ```
-OpenRouter API  ─────────────────────────────────────────────────┐
-                                                                 │
-Layer 1: sources/openrouter.py                                   │
-    Fetch raw model data, parse prices with Decimal,             │
-    read input_cache_read / input_cache_write fields.            │
-                    │                                            │
-Layer 2: canonicalize.py                                         │
-    Map source IDs ("openai/gpt-5.4") to tokdash                 │
-    pricing_db keys ("gpt-5.4"). Apply provider mapping.         │
-                    │                                            │
-Layer 3: policy.py                                               │
-    Fill missing cache fields with per-provider heuristics       │
-    (OpenAI 50%, Anthropic 10%/125%, etc.). Round prices.        │
-                    │                                            │
-Layer 4: render_tokdash_db.py                                    │
-    Merge scraped models + config/manual_models.yaml             │
-    + config/derived_models.yaml + config/aliases.yaml           │
-    into a complete pricing_db.json with section comments.       │
-                    │                                            │
-Layer 5: diff.py + approval.py                                   │
-    Compare against current tokdash pricing_db.json.             │
-    Classify each change: safe_add / review_required /           │
-    manual_only. Gate removals on consecutive last_seen misses.  │
-                    │                                            │
-                    ▼                                            │
-    output/proposals/proposed_pricing_db.json                    │
-    (ready to copy into tokdash or open as PR)                   │
-─────────────────────────────────────────────────────────────────┘
+ OpenRouter API              Official provider sites
+ sources/openrouter.py       sources/official_*.py
+       │                            │
+       │                     ┌──────┴──────────────────┐
+       │                     │ Z.ai   docs.z.ai        │ live
+       │                     │ MiniMax platform.minimax │ live
+       │                     │ Moonshot (SPA fallback)  │ YAML
+       │                     │ Xiaomi  (SPA fallback)   │ YAML
+       │                     │ DeepSeek api-docs        │ YAML*
+       │                     │ Anthropic (matches OR)   │ YAML
+       │                     └──────┬──────────────────┘
+       │                            │
+Layer 1: canonicalize.py            │
+    Map source IDs to tokdash       │
+    pricing_db keys.                │
+       │                            │
+Layer 2: policy.py ─────────────────┘
+    a. Official overlay: resolve family map
+       (config/official_family_map.yaml),
+       normalize currency (config/fx_rates.yaml),
+       apply max(openrouter, official) per field.
+    b. Cache fallback: fill missing cache fields
+       with per-provider heuristics.
+    c. Round prices.
+       │
+Layer 3: render_tokdash_db.py
+    Merge scraped + manual_models.yaml
+    + derived_models.yaml + aliases.yaml
+    → complete pricing_db.json.
+       │
+Layer 4: diff.py + approval.py
+    Classify: safe_add / review_required /
+    manual_only.  Gate removals via last_seen.
+       │
+       ▼
+    output/proposals/proposed_pricing_db.json
+
+* DeepSeek live scraper attempts fetch but currently
+  falls back to YAML due to page structure.
 ```
 
 ## Quick start
@@ -407,18 +418,28 @@ tokdash-pricing-updater/
 │   ├── aliases.yaml            # pricing_db.json alias section (manual)
 │   ├── manual_models.yaml      # Models not on any source (manual)
 │   ├── derived_models.yaml     # Models derived from base pricing (manual)
-│   └── pricing_policy.yaml     # Cache heuristics, rounding, removal gating,
-│                               #   provider ordering, field mapping
+│   ├── pricing_policy.yaml     # Cache heuristics, rounding, removal gating,
+│   │                           #   provider ordering, field mapping
+│   ├── official_prices.yaml    # Official USD prices (YAML fallback)
+│   ├── official_family_map.yaml # Versioned model → family price mapping
+│   └── fx_rates.yaml           # CNY→USD exchange rate
 ├── src/pricing_updater/
 │   ├── __init__.py
 │   ├── __main__.py             # python -m pricing_updater
 │   ├── cli.py                  # CLI entry point, pipeline orchestration
 │   ├── sources/
 │   │   ├── __init__.py
+│   │   ├── _html_table.py      # Shared HTML <table> parser
 │   │   ├── base.py             # ScrapedModel dataclass
-│   │   └── openrouter.py       # OpenRouter /api/v1/models scraper
+│   │   ├── openrouter.py       # OpenRouter /api/v1/models scraper
+│   │   ├── official_fetch.py   # Orchestrator for all official adapters
+│   │   ├── official_zai.py     # Z.ai/GLM  (docs.z.ai — live)
+│   │   ├── official_minimax.py # MiniMax    (platform.minimax.io — live)
+│   │   ├── official_moonshot.py# Moonshot   (SPA — falls back to YAML)
+│   │   ├── official_xiaomi.py  # Xiaomi     (SPA — falls back to YAML)
+│   │   └── official_deepseek.py# DeepSeek   (attempts live, YAML fallback)
 │   ├── canonicalize.py         # Source IDs → tokdash pricing_db keys
-│   ├── policy.py               # Cache fallback, rounding
+│   ├── policy.py               # Official overlay, FX, cache fallback, rounding
 │   ├── render_tokdash_db.py    # Merge all layers → pricing_db.json
 │   ├── diff.py                 # Diff engine, change classification
 │   ├── approval.py             # Interactive + auto review
@@ -489,8 +510,10 @@ The `auto --create-pr` command only creates a PR when there are approved
 | Decision | Rationale |
 |----------|-----------|
 | Separate private repo | Keeps scraping logic and API keys out of the open-source tokdash repo. Tokdash only consumes `pricing_db.json`. |
-| OpenRouter as primary source | Single API call covers all tracked providers. Public endpoint, no auth required. Now includes `input_cache_read` and `input_cache_write` fields. |
-| No OpenAI/Anthropic web scraping | Official pricing pages are webpages, not stable API contracts. OpenRouter provides their pricing with cache fields. Official scrapers can be added later as separate source modules if needed. |
+| Dual-source: OpenRouter + official sites | OpenRouter provides broad coverage (124 models, 8 providers) in one call. Official adapters (Z.ai, MiniMax live; Moonshot, Xiaomi YAML fallback) provide authoritative first-party prices. `max(openrouter, official)` per field ensures conservative cost tracking. |
+| FX normalization | Official prices may be in CNY or USD. `config/fx_rates.yaml` holds the exchange rate; `policy.py` converts to USD before the max() comparison. Currently all tracked providers have USD pricing pages, but the machinery is ready for CNY sources. |
+| Family mapping | Official providers list fewer model IDs than OpenRouter (e.g. DeepSeek lists 2, OpenRouter lists 11). `config/official_family_map.yaml` maps versioned variants to their official pricing family via glob patterns. |
+| YAML fallback for SPA pages | Moonshot and Xiaomi official pages are JavaScript SPAs that don't serve pricing in initial HTML. Live adapters attempt to fetch them each run (will start working if SSR is added); YAML config provides the fallback. |
 | Decimal arithmetic | OpenRouter returns per-token prices as strings (`"0.000005"`). Parsing with `Decimal` avoids floating-point drift during the `* 1,000,000` conversion to per-MTok. |
 | Manual/derived/alias configs | These represent tokdash's compatibility surface, not scraped data. Keeping them in YAML config files means the scraper can never accidentally remove or overwrite them. |
 | Staleness gating (last_seen) | A model disappearing from one scrape could be a transient API issue. Requiring 4+ consecutive misses before even flagging prevents false removal proposals. |
