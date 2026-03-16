@@ -73,14 +73,41 @@ cd ~/Projects
 git clone <this-repo> tokdash-pricing-updater
 cd tokdash-pricing-updater
 
-# Install (requires Python >= 3.10).
+# Create a dedicated conda env.
+conda create -n pricing-updater python=3.12 -y
+conda activate pricing-updater
 pip install -e .
 
-# Run a diff against your local tokdash.
+# See what changed since the last update.
 python -m pricing_updater --tokdash-repo ../tokdash diff
+```
 
-# Interactive review: scrape, diff, approve/reject each change.
+## Typical workflow
+
+```bash
+conda activate pricing-updater
+cd ~/Projects/tokdash-pricing-updater
+
+# 1. Interactive review: scrape, diff, approve/reject each change.
 python -m pricing_updater --tokdash-repo ../tokdash propose
+
+# 2. Copy the approved result into tokdash.
+cp output/proposals/proposed_pricing_db.json ../tokdash/src/tokdash/pricing_db.json
+
+# 3. Verify nothing broke.
+cd ../tokdash
+python -m pytest tests/test_pricing_db_contract.py -v
+
+# 4. Commit in tokdash when satisfied.
+git add src/tokdash/pricing_db.json
+git commit -m "Update pricing DB (YYYY-MM-DD)"
+```
+
+For non-interactive runs that only add new models (no price changes applied):
+
+```bash
+python -m pricing_updater --tokdash-repo ../tokdash auto
+cp output/proposals/proposed_pricing_db.json ../tokdash/src/tokdash/pricing_db.json
 ```
 
 ### Dependencies
@@ -204,6 +231,10 @@ providers:
     tokdash_provider: minimax
   - slug: z-ai
     tokdash_provider: z-ai
+  - slug: deepseek
+    tokdash_provider: deepseek
+  - slug: xiaomi
+    tokdash_provider: xiaomi
 
 skip_patterns:             # Regex patterns to skip matching model IDs.
   - ":free$"               # Community/free endpoints
@@ -454,6 +485,7 @@ tokdash-pricing-updater/
     ├── __init__.py
     ├── test_canonicalize.py
     ├── test_diff.py
+    ├── test_model_coverage.py  # Fixture tests for named models
     ├── test_policy.py
     └── test_render.py
 ```
