@@ -32,7 +32,7 @@ concern separate.
        │                     │ MiniMax platform.minimax │ live
        │                     │ Moonshot (SPA fallback)  │ YAML
        │                     │ Xiaomi  (SPA fallback)   │ YAML
-       │                     │ DeepSeek api-docs        │ YAML*
+       │                     │ DeepSeek api-docs        │ live
        │                     │ Anthropic (matches OR)   │ YAML
        │                     └──────┬──────────────────┘
        │                            │
@@ -60,9 +60,6 @@ Layer 4: diff.py + approval.py
        │
        ▼
     output/proposals/proposed_pricing_db.json
-
-* DeepSeek live scraper attempts fetch but currently
-  falls back to YAML due to page structure.
 ```
 
 ## Quick start
@@ -468,7 +465,7 @@ tokdash-pricing-updater/
 │   │   ├── official_minimax.py # MiniMax    (platform.minimax.io — live)
 │   │   ├── official_moonshot.py# Moonshot   (SPA — falls back to YAML)
 │   │   ├── official_xiaomi.py  # Xiaomi     (SPA — falls back to YAML)
-│   │   └── official_deepseek.py# DeepSeek   (attempts live, YAML fallback)
+│   │   └── official_deepseek.py# DeepSeek   (api-docs.deepseek.com — live)
 │   ├── canonicalize.py         # Source IDs → tokdash pricing_db keys
 │   ├── policy.py               # Official overlay, FX, cache fallback, rounding
 │   ├── render_tokdash_db.py    # Merge all layers → pricing_db.json
@@ -542,7 +539,7 @@ The `auto --create-pr` command only creates a PR when there are approved
 | Decision | Rationale |
 |----------|-----------|
 | Separate private repo | Keeps scraping logic and API keys out of the open-source tokdash repo. Tokdash only consumes `pricing_db.json`. |
-| Dual-source: OpenRouter + official sites | OpenRouter provides broad coverage (124 models, 8 providers) in one call. Official adapters (Z.ai, MiniMax live; Moonshot, Xiaomi YAML fallback) provide authoritative first-party prices. `max(openrouter, official)` per field ensures conservative cost tracking. |
+| Dual-source: OpenRouter + official sites | OpenRouter provides broad coverage (124 models, 8 providers) in one call. Official adapters (Z.ai, MiniMax, DeepSeek live; Moonshot, Xiaomi YAML fallback) provide authoritative first-party prices. `max(openrouter, official)` per field ensures conservative cost tracking. |
 | FX normalization | Official prices may be in CNY or USD. `config/fx_rates.yaml` holds the exchange rate; `policy.py` converts to USD before the max() comparison. Currently all tracked providers have USD pricing pages, but the machinery is ready for CNY sources. |
 | Family mapping | Official providers list fewer model IDs than OpenRouter (e.g. DeepSeek lists 2, OpenRouter lists 11). `config/official_family_map.yaml` maps versioned variants to their official pricing family via glob patterns. |
 | YAML fallback for SPA pages | Moonshot and Xiaomi official pages are JavaScript SPAs that don't serve pricing in initial HTML. Live adapters attempt to fetch them each run (will start working if SSR is added); YAML config provides the fallback. |
