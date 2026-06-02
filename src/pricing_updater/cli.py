@@ -274,7 +274,7 @@ def cmd_propose(args):
         return
 
     # Re-render with only approved changes applied to current DB.
-    final_db = _apply_approved(current_db, approved)
+    final_db = _apply_approved(current_db, proposed_db, approved)
     out_path = output_dir / "proposals" / "proposed_pricing_db.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -324,7 +324,7 @@ def cmd_auto(args):
         return
 
     if approved:
-        final_db = _apply_approved(current_db, approved)
+        final_db = _apply_approved(current_db, proposed_db, approved)
         out_path = output_dir / "proposals" / "proposed_pricing_db.json"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         from .render_tokdash_db import dump_json
@@ -358,22 +358,107 @@ def _load_current_db(tokdash_repo: str) -> dict:
     return json.loads(db_path.read_text())
 
 
-def _apply_approved(current_db: dict, approved) -> dict:
-    """Apply approved changes to a copy of current_db."""
+def _apply_approved(current_db: dict, proposed_db: dict, approved) -> dict:
+    """Apply approved changes while preserving the current key order.
+
+    Optimized for a minimal, readable diff against the current pricing_db.json:
+      * Existing entries keep their position; approved price changes are applied
+        in place (so git sees an edit, not a move).
+      * Approved new models are inserted right after their provider's last
+        existing entry, keeping each provider contiguous.
+      * Models from brand-new providers are appended as their own section
+        (reusing the rendered section comment) at the end of the file.
+      * Stale/legacy entries are never moved or removed.
+
+    This deliberately does NOT re-emit the freshly rendered section order from
+    ``proposed_db`` — doing so relocates every existing entry and turns a handful
+    of additions into a huge delete/add diff.
+    """
     import copy
     from datetime import datetime, timezone
 
     result = copy.deepcopy(current_db)
-    models = result.setdefault("models", {})
+    current_models = current_db.get("models", {})
+    proposed_models = proposed_db.get("models", {})
 
-    for change in approved:
-        if change.change_type == "new" and change.new_entry:
-            models[change.model_id] = change.new_entry
-        elif change.change_type == "price_change" and change.new_entry:
-            models[change.model_id] = change.new_entry
-        elif change.change_type == "stale":
-            # manual_only — should never reach here via auto, but guard anyway.
-            pass
+    approved_new = {c.model_id for c in approved if c.change_type == "new"}
+    approved_chg = {c.model_id for c in approved if c.change_type == "price_change"}
+
+    def _provider_of(model_id: str) -> str:
+        entry = proposed_models.get(model_id)
+        return entry.get("provider", "") if isinstance(entry, dict) else ""
+
+    # 1. Copy current models in their existing order, applying approved price
+    #    changes in place. Everything else (incl. stale entries) is untouched.
+    models: dict = {}
+    for key, value in current_models.items():
+        if key in approved_chg and isinstance(proposed_models.get(key), dict):
+            models[key] = proposed_models[key]
+        else:
+            models[key] = value
+
+    # 2. Group approved-new models by provider (sorted for deterministic output).
+    new_by_provider: dict[str, list[str]] = {}
+    for model_id in approved_new:
+        if model_id in models:
+            continue
+        new_by_provider.setdefault(_provider_of(model_id), []).append(model_id)
+    for ids in new_by_provider.values():
+        ids.sort()
+
+    existing_providers = {
+        v.get("provider")
+        for v in current_models.values()
+        if isinstance(v, dict) and v.get("provider")
+    }
+
+    # 2a. Existing providers: insert new models after the provider's last entry.
+    for provider, ids in new_by_provider.items():
+        if provider not in existing_providers:
+            continue
+        keys = list(models.keys())
+        last_idx = max(
+            (i for i, k in enumerate(keys)
+             if isinstance(models[k], dict) and models[k].get("provider") == provider),
+            default=-1,
+        )
+        if last_idx < 0:
+            continue
+        rebuilt: dict = {}
+        for i, k in enumerate(keys):
+            rebuilt[k] = models[k]
+            if i == last_idx:
+                for model_id in ids:
+                    rebuilt[model_id] = proposed_models[model_id]
+        models = rebuilt
+
+    # 2b. Brand-new providers: append their rendered section (comment + models)
+    #     at the end, preserving the proposed grouping.
+    brand_new = {p for p in new_by_provider if p and p not in existing_providers}
+    if brand_new:
+        section = None
+        appended_comments: set = set()
+        for key, value in proposed_models.items():
+            if not isinstance(value, dict):
+                section = (key, value)  # a "_comment_*" header
+                continue
+            if (
+                key in approved_new
+                and key not in models
+                and value.get("provider") in brand_new
+            ):
+                if section and section[0] not in models and section[0] not in appended_comments:
+                    models[section[0]] = section[1]
+                    appended_comments.add(section[0])
+                models[key] = value
+
+    # Safety net: guarantee every approved-new model is present even if its
+    # provider could not be placed above (e.g. missing provider field).
+    for model_id in sorted(approved_new):
+        if model_id not in models and isinstance(proposed_models.get(model_id), dict):
+            models[model_id] = proposed_models[model_id]
+
+    result["models"] = models
 
     # Bump version.
     old_ver = result.get("version", "2.0.0")
