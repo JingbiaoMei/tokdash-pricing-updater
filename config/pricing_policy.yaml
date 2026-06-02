@@ -67,6 +67,39 @@ provider_order:
   - key: _comment_xiaomi
     label: "=== Xiaomi Models ==="
     providers: [xiaomi]
+  - key: _comment_qwen
+    label: "=== Qwen Models ==="
+    providers: [qwen]
+  - key: _comment_bytedance
+    label: "=== ByteDance Models ==="
+    providers: [bytedance]
+  - key: _comment_tencent
+    label: "=== Tencent Models ==="
+    providers: [tencent]
+  - key: _comment_xai
+    label: "=== xAI Grok Models ==="
+    providers: [xai]
+  - key: _comment_stepfun
+    label: "=== StepFun Models ==="
+    providers: [stepfun]
+  - key: _comment_baidu
+    label: "=== Baidu ERNIE Models ==="
+    providers: [baidu]
+  - key: _comment_mistral
+    label: "=== Mistral Models ==="
+    providers: [mistral]
+  - key: _comment_cohere
+    label: "=== Cohere Models ==="
+    providers: [cohere]
+  - key: _comment_perplexity
+    label: "=== Perplexity Models ==="
+    providers: [perplexity]
+  - key: _comment_ai21
+    label: "=== AI21 Models ==="
+    providers: [ai21]
+  - key: _comment_reka
+    label: "=== Reka Models ==="
+    providers: [reka]
   - key: _comment_antigravity
     label: "=== Antigravity Models (mapped to base model pricing) ==="
     providers: []  # derived_models only
