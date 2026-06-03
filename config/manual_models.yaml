@@ -1,5 +1,9 @@
 # Models maintained by hand — never scraped, never auto-removed.
 # These exist in pricing_db.json for runtime lookup compatibility.
+#
+# Listing a model here makes it "protected": the diff engine never flags it
+# for a price change or staleness, and _apply_approved never overwrites it.
+# Use this to FREEZE a curated price against a noisy/discounted source.
 models:
   gpt-5.3-codex:
     provider: openai
@@ -9,3 +13,18 @@ models:
     cache_write: 1.75
     unit: per_million_tokens
     note: "Uses GPT-5.2-Codex pricing (model doesn't exist on OpenRouter)"
+
+  # Frozen at official standard PAYG list price. OpenRouter currently lists the
+  # 7-day launch discount (0.3/1.2), which would otherwise flap as a recurring
+  # review_required change every run. Protecting it here pins the list price.
+  # Revisit after the discount ends (~2026-06-07): if OpenRouter then matches
+  # 0.6/2.4, this entry can be removed to resume normal scrape tracking.
+  minimax-m3:
+    provider: minimax
+    input: 0.6
+    output: 2.4
+    cache_read: 0.06
+    cache_write: 0.6
+    unit: per_million_tokens
+    source: platform.minimax.io/docs/guides/pricing-paygo
+    note: "Official standard PAYG (<=512K ctx). 7-day launch 50% off (~till 2026-06-07) billed 0.3/1.2 — matches back-derived minimax-cn logs."

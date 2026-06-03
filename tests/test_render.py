@@ -1,6 +1,8 @@
 from decimal import Decimal
 from collections import OrderedDict
+from pathlib import Path
 
+import yaml
 from pricing_updater.canonicalize import CanonicalModel
 from pricing_updater.render_tokdash_db import render, resolve_derived_models, dump_json
 
@@ -63,6 +65,29 @@ def test_manual_models_included():
     assert "custom-model" in db["models"]
 
 
+def test_render_raises_for_provider_missing_from_provider_order():
+    models = [
+        _make_model("qwen3.5-397b-a17b", "qwen", 0.195, 1.56, 0.0195, 0.195),
+    ]
+    provider_order = [
+        {"key": "_comment_openai", "label": "=== OpenAI ===", "providers": ["openai"]},
+    ]
+
+    try:
+        render(
+            canonical_models=models,
+            manual_models={},
+            derived_models={},
+            aliases={},
+            provider_order=provider_order,
+            current_version="2.0.1",
+        )
+        assert False, "render() should fail when provider_order omits a provider"
+    except ValueError as exc:
+        assert "qwen" in str(exc)
+        assert "qwen3.5-397b-a17b" in str(exc)
+
+
 def test_derived_models_resolve():
     base = _make_model("claude-sonnet-4.6", "anthropic", 3.0, 15.0, 0.3, 3.75)
     derived_cfg = {
@@ -77,6 +102,31 @@ def test_derived_models_resolve():
     assert "antigravity-claude-sonnet-4-6" in resolved
     assert resolved["antigravity-claude-sonnet-4-6"]["input"] == 3.0
     assert resolved["antigravity-claude-sonnet-4-6"]["provider"] == "google"
+
+
+def test_selected_live_providers_are_configured_for_scrape_and_render():
+    cfg_dir = Path(__file__).parent.parent / "config"
+    providers_cfg = yaml.safe_load((cfg_dir / "tracked_providers.yaml").read_text()) or {}
+    policy_cfg = yaml.safe_load((cfg_dir / "pricing_policy.yaml").read_text()) or {}
+
+    tracked = {
+        entry["slug"]: entry["tokdash_provider"]
+        for entry in providers_cfg.get("providers", [])
+    }
+    provider_sections = {
+        provider
+        for section in policy_cfg.get("provider_order", [])
+        for provider in section.get("providers", [])
+    }
+
+    assert tracked.get("qwen") == "qwen"
+    assert tracked.get("bytedance") == "bytedance"
+    assert tracked.get("bytedance-seed") == "bytedance"
+    assert tracked.get("tencent") == "tencent"
+
+    assert "qwen" in provider_sections
+    assert "bytedance" in provider_sections
+    assert "tencent" in provider_sections
 
 
 def test_dump_json_produces_valid_json():

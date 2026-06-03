@@ -18,3 +18,8 @@ pricing-updater = "pricing_updater.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+
+[tool.pytest.ini_options]
+# Make `pytest` work from a bare checkout without `pip install -e .`.
+pythonpath = ["src"]
+testpaths = ["tests"]

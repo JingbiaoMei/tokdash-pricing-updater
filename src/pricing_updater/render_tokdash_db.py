@@ -51,6 +51,38 @@ def _manual_entry(cfg: dict) -> dict:
     return entry
 
 
+def _validate_render_coverage(
+    canonical_by_id: dict[str, CanonicalModel],
+    manual_models: dict[str, dict],
+    models_section: dict,
+) -> None:
+    """Fail fast if provider_order leaves scraped/manual models unrendered."""
+    rendered_ids = {k for k, v in models_section.items() if isinstance(v, dict)}
+
+    missing_canonical = sorted(mid for mid in canonical_by_id if mid not in rendered_ids)
+    missing_manual = sorted(mid for mid in manual_models if mid not in rendered_ids)
+
+    if not missing_canonical and not missing_manual:
+        return
+
+    missing_providers = sorted(
+        {
+            canonical_by_id[mid].provider
+            for mid in missing_canonical
+        }
+        | {
+            str(manual_models[mid].get("provider", ""))
+            for mid in missing_manual
+        }
+    )
+    missing_models = missing_canonical + missing_manual
+    raise ValueError(
+        "provider_order does not cover all rendered providers. "
+        f"Missing providers: {', '.join(p for p in missing_providers if p) or '<unknown>'}. "
+        f"Missing models: {', '.join(missing_models)}"
+    )
+
+
 def render(
     canonical_models: list[CanonicalModel],
     manual_models: dict[str, dict],
@@ -111,6 +143,8 @@ def render(
         for mid, mcfg in sorted(manual_models.items()):
             if mcfg.get("provider") in providers_in_section and mid not in models_section:
                 models_section[mid] = _manual_entry(mcfg)
+
+    _validate_render_coverage(canonical_by_id, manual_models, models_section)
 
     # Derived models go into the antigravity section (last in provider_order).
     for mid, entry in sorted(derived_models.items()):

@@ -96,6 +96,15 @@ def apply_official_overlay(
             continue
 
         currency = official.get("currency", "USD")
+        if currency not in rates:
+            # Don't abort the whole run for one unconvertible currency: keep the
+            # OpenRouter price and warn so it can be fixed in config/fx_rates.yaml.
+            print(
+                f"  WARNING: {m.canonical_id!r} official price is in unknown "
+                f"currency {currency!r} (add it to config/fx_rates.yaml); "
+                f"keeping OpenRouter price."
+            )
+            continue
 
         for cfg_key, attr in _PRICE_FIELDS:
             official_val = official.get(cfg_key)

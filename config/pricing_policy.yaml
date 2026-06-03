@@ -35,9 +35,17 @@ rounding:
 # and mention alternatives in the note field.
 context_tier_preference: standard  # "standard" = lowest / default tier
 
-# Removal gating: number of consecutive scrape misses before a model
-# is even proposed for deletion (and deletions are always manual_only).
+# Removal gating.
+#   enabled: false  -> never flag stale/legacy models at all. pricing_db.json is
+#                      a runtime compatibility layer; removing a key zeroes out
+#                      cost for any historical session that used that model, so
+#                      we keep every legacy key. With deletions never wanted,
+#                      stale detection only produces noise, so it is turned off.
+#   min_consecutive_misses -> if re-enabled, how many consecutive scrape misses
+#                      before a model is even proposed for deletion (and
+#                      deletions are always manual_only, never automatic).
 removal:
+  enabled: false
   min_consecutive_misses: 4
 
 # Provider-specific section comment keys for rendering.
@@ -67,6 +75,39 @@ provider_order:
   - key: _comment_xiaomi
     label: "=== Xiaomi Models ==="
     providers: [xiaomi]
+  - key: _comment_qwen
+    label: "=== Qwen Models ==="
+    providers: [qwen]
+  - key: _comment_bytedance
+    label: "=== ByteDance Models ==="
+    providers: [bytedance]
+  - key: _comment_tencent
+    label: "=== Tencent Models ==="
+    providers: [tencent]
+  - key: _comment_xai
+    label: "=== xAI Grok Models ==="
+    providers: [xai]
+  - key: _comment_stepfun
+    label: "=== StepFun Models ==="
+    providers: [stepfun]
+  - key: _comment_baidu
+    label: "=== Baidu ERNIE Models ==="
+    providers: [baidu]
+  - key: _comment_mistral
+    label: "=== Mistral Models ==="
+    providers: [mistral]
+  - key: _comment_cohere
+    label: "=== Cohere Models ==="
+    providers: [cohere]
+  - key: _comment_perplexity
+    label: "=== Perplexity Models ==="
+    providers: [perplexity]
+  - key: _comment_ai21
+    label: "=== AI21 Models ==="
+    providers: [ai21]
+  - key: _comment_reka
+    label: "=== Reka Models ==="
+    providers: [reka]
   - key: _comment_antigravity
     label: "=== Antigravity Models (mapped to base model pricing) ==="
     providers: []  # derived_models only

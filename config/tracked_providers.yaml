@@ -17,6 +17,30 @@ providers:
     tokdash_provider: deepseek
   - slug: xiaomi
     tokdash_provider: xiaomi
+  - slug: qwen
+    tokdash_provider: qwen
+  - slug: bytedance
+    tokdash_provider: bytedance
+  - slug: bytedance-seed
+    tokdash_provider: bytedance
+  - slug: tencent
+    tokdash_provider: tencent
+  - slug: x-ai
+    tokdash_provider: xai
+  - slug: stepfun
+    tokdash_provider: stepfun
+  - slug: baidu
+    tokdash_provider: baidu
+  - slug: mistralai
+    tokdash_provider: mistral
+  - slug: cohere
+    tokdash_provider: cohere
+  - slug: perplexity
+    tokdash_provider: perplexity
+  - slug: ai21
+    tokdash_provider: ai21
+  - slug: rekaai          # NB: OpenRouter author slug is "rekaai", not "reka"
+    tokdash_provider: reka
 
 # OpenRouter model ID patterns to skip even if provider matches.
 skip_patterns:

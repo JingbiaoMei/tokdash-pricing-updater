@@ -67,6 +67,33 @@ def test_derived_models_never_flagged():
     assert len(changes) == 0
 
 
+def test_stale_disabled_skips_flagging():
+    """With enable_stale=False, a model missing from the scrape is never flagged,
+    no matter how many consecutive misses it has accumulated."""
+    current = {"legacy-model": {"provider": "openai", "input": 1.0, "output": 2.0}}
+    proposed = {}  # not in proposed
+    # Even with a tiny threshold and a pre-loaded miss count, nothing is flagged.
+    last_seen = {"legacy-model": {"consecutive_misses": 9, "first_seen": "2026-01-01"}}
+    changes, _ = compute_diff(
+        current, proposed, set(), set(),
+        last_seen=last_seen, min_misses=1, enable_stale=False,
+    )
+    assert changes == []
+
+
+def test_stale_enabled_still_flags():
+    """Sanity: with the default (enabled), the same model is flagged once over threshold."""
+    current = {"legacy-model": {"provider": "openai", "input": 1.0, "output": 2.0}}
+    proposed = {}
+    last_seen = {"legacy-model": {"consecutive_misses": 9, "first_seen": "2026-01-01"}}
+    changes, _ = compute_diff(
+        current, proposed, set(), set(),
+        last_seen=last_seen, min_misses=1, enable_stale=True,
+    )
+    assert len(changes) == 1
+    assert changes[0].classification == "manual_only"
+
+
 def test_comment_entries_ignored():
     current = {
         "_comment_openai": "=== OpenAI Models ===",
