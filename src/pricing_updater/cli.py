@@ -150,7 +150,9 @@ def _step_diff(current_db, proposed_db, manual_cfg, derived_cfg, state_dir, poli
 
     last_seen_path = state_dir / "last_seen.json"
     last_seen = load_last_seen(last_seen_path)
-    min_misses = policy_cfg.get("removal", {}).get("min_consecutive_misses", 4)
+    removal_cfg = policy_cfg.get("removal", {})
+    min_misses = removal_cfg.get("min_consecutive_misses", 4)
+    enable_stale = removal_cfg.get("enabled", True)
 
     manual_ids = set((manual_cfg.get("models") or {}).keys())
     derived_ids = set((derived_cfg.get("models") or {}).keys())
@@ -162,6 +164,7 @@ def _step_diff(current_db, proposed_db, manual_cfg, derived_cfg, state_dir, poli
         derived_ids=derived_ids,
         last_seen=last_seen,
         min_misses=min_misses,
+        enable_stale=enable_stale,
     )
 
     save_last_seen(last_seen_path, updated_last_seen)

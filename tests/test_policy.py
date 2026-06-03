@@ -97,6 +97,17 @@ def test_fx_conversion_cny_to_usd():
     assert float(result[0].output_per_mtok) == 2.30
 
 
+def test_official_overlay_unknown_currency_is_skipped(capsys):
+    """An unconvertible currency must not abort the run; OR price is kept + a warning."""
+    m = _make("test-model", "z-ai", "0.50", "1.00")
+    official = {"test-model": {"input": 5.0, "currency": "GBP"}}
+    fx = {"USD": 1.0, "CNY": 0.137}  # no GBP
+    result = apply_official_overlay([m], official, fx_rates=fx)
+    # OpenRouter price preserved (no exception raised).
+    assert float(result[0].input_per_mtok) == 0.50
+    assert "unknown" in capsys.readouterr().out.lower()
+
+
 def test_fx_conversion_cny_higher_than_or():
     """When CNY-converted price exceeds OpenRouter, official wins."""
     m = _make("test-model", "z-ai", "0.50", "1.00")

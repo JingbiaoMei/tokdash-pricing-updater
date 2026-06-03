@@ -35,9 +35,17 @@ rounding:
 # and mention alternatives in the note field.
 context_tier_preference: standard  # "standard" = lowest / default tier
 
-# Removal gating: number of consecutive scrape misses before a model
-# is even proposed for deletion (and deletions are always manual_only).
+# Removal gating.
+#   enabled: false  -> never flag stale/legacy models at all. pricing_db.json is
+#                      a runtime compatibility layer; removing a key zeroes out
+#                      cost for any historical session that used that model, so
+#                      we keep every legacy key. With deletions never wanted,
+#                      stale detection only produces noise, so it is turned off.
+#   min_consecutive_misses -> if re-enabled, how many consecutive scrape misses
+#                      before a model is even proposed for deletion (and
+#                      deletions are always manual_only, never automatic).
 removal:
+  enabled: false
   min_consecutive_misses: 4
 
 # Provider-specific section comment keys for rendering.

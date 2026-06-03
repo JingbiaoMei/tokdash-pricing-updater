@@ -57,6 +57,7 @@ def compute_diff(
     derived_ids: set[str],
     last_seen: dict[str, dict],
     min_misses: int = 4,
+    enable_stale: bool = True,
     today: str | None = None,
 ) -> tuple[list[PricingChange], dict[str, dict]]:
     """Compare current pricing_db models against proposed.
@@ -68,6 +69,9 @@ def compute_diff(
         derived_ids: model IDs from derived_models.yaml (never flag these).
         last_seen: state/last_seen.json content.
         min_misses: consecutive scrape misses before proposing staleness.
+        enable_stale: when False, skip stale detection entirely. pricing_db.json
+            is a runtime compatibility layer — legacy keys are kept forever, so
+            staleness has no actionable output and is just noise.
         today: override for today's date (ISO format), for testing.
 
     Returns:
@@ -131,7 +135,9 @@ def compute_diff(
         updated_last_seen[k] = entry
 
     # --- Stale models (in current but not in proposed, and not protected) ---
-    for k in sorted(current_keys - proposed_keys):
+    # Skipped entirely when stale detection is disabled: the DB is a runtime
+    # compatibility layer and legacy keys are never removed.
+    for k in (sorted(current_keys - proposed_keys) if enable_stale else []):
         if k in protected:
             continue
         entry = updated_last_seen.get(k, {})
