@@ -11,3 +11,6 @@ aliases:
   "kimi-coding/k2p5": "kimi-k2.5"
   "kimi-ai/kimi-2.5": "kimi-k2.5"
   "moonshot-ai/kimi-k2.5": "kimi-k2.5"
+  "sonnet-5": "claude-sonnet-5"
+  "sonnet5": "claude-sonnet-5"
+  "claude-sonnet-5-20260630": "claude-sonnet-5"
