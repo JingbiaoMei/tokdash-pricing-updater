@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import OrderedDict
 from datetime import date
 from pathlib import Path
 
@@ -145,7 +146,7 @@ def _step_render(
 
 def _step_diff(current_db, proposed_db, manual_cfg, derived_cfg, state_dir, policy_cfg):
     from .diff import (
-        compute_diff, generate_diff_report, load_last_seen, save_last_seen,
+        compute_alias_diff, compute_diff, generate_diff_report, load_last_seen, save_last_seen,
     )
 
     last_seen_path = state_dir / "last_seen.json"
@@ -165,6 +166,12 @@ def _step_diff(current_db, proposed_db, manual_cfg, derived_cfg, state_dir, poli
         last_seen=last_seen,
         min_misses=min_misses,
         enable_stale=enable_stale,
+    )
+    changes.extend(
+        compute_alias_diff(
+            current_db.get("aliases", {}),
+            proposed_db.get("aliases", {}),
+        )
     )
 
     save_last_seen(last_seen_path, updated_last_seen)
@@ -386,6 +393,9 @@ def _apply_approved(current_db: dict, proposed_db: dict, approved) -> dict:
 
     approved_new = {c.model_id for c in approved if c.change_type == "new"}
     approved_chg = {c.model_id for c in approved if c.change_type == "price_change"}
+    approved_aliases = {
+        c.model_id for c in approved if c.change_type in {"alias_add", "alias_change"}
+    }
 
     def _provider_of(model_id: str) -> str:
         entry = proposed_models.get(model_id)
@@ -462,6 +472,14 @@ def _apply_approved(current_db: dict, proposed_db: dict, approved) -> dict:
             models[model_id] = proposed_models[model_id]
 
     result["models"] = models
+
+    proposed_aliases = proposed_db.get("aliases", {})
+    if approved_aliases:
+        merged_aliases = dict(result.get("aliases", {}))
+        for alias in sorted(approved_aliases):
+            if alias in proposed_aliases:
+                merged_aliases[alias] = proposed_aliases[alias]
+        result["aliases"] = OrderedDict(sorted(merged_aliases.items()))
 
     # Bump version.
     old_ver = result.get("version", "2.0.0")

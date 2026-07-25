@@ -1,4 +1,4 @@
-from pricing_updater.cli import _apply_approved
+from pricing_updater.cli import _apply_approved, _step_diff
 from pricing_updater.diff import PricingChange
 
 
@@ -54,6 +54,54 @@ def test_apply_approved_restores_unapproved_price_changes():
     final_db = _apply_approved(current_db, proposed_db, approved=[])
 
     assert final_db["models"]["gpt-5.4"]["input"] == 2.5
+
+
+def test_step_diff_detects_alias_only_add(tmp_path):
+    current_db = {
+        "version": "2.0.2",
+        "aliases": {},
+        "models": {
+            "seed-2.0-lite": {"provider": "bytedance-seed", "input": 0.11, "output": 0.22},
+        },
+    }
+    proposed_db = {
+        "version": "2.0.3",
+        "aliases": {"doubao-seed-2.0-lite": "seed-2.0-lite"},
+        "models": current_db["models"],
+    }
+
+    changes, report = _step_diff(
+        current_db,
+        proposed_db,
+        manual_cfg={},
+        derived_cfg={},
+        state_dir=tmp_path,
+        policy_cfg={"removal": {"enabled": False}},
+    )
+
+    assert [c.change_type for c in changes] == ["alias_add"]
+    assert changes[0].classification == "safe_add"
+    assert "doubao-seed-2.0-lite" in report
+
+
+def test_apply_approved_does_not_apply_unapproved_alias_remap():
+    current_db = {
+        "version": "2.0.2",
+        "aliases": {"doubao-seed-1.6": "seed-1.6"},
+        "models": {
+            "seed-1.6": {"provider": "bytedance-seed", "input": 0.8, "output": 0.8},
+            "seed-1.6-flash": {"provider": "bytedance-seed", "input": 0.4, "output": 0.4},
+        },
+    }
+    proposed_db = {
+        "version": "2.0.3",
+        "aliases": {"doubao-seed-1.6": "seed-1.6-flash"},
+        "models": current_db["models"],
+    }
+
+    final_db = _apply_approved(current_db, proposed_db, approved=[])
+
+    assert final_db["aliases"]["doubao-seed-1.6"] == "seed-1.6"
 
 
 def test_apply_approved_preserves_order_and_inserts_in_place():

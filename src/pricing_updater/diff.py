@@ -19,7 +19,7 @@ from pathlib import Path
 @dataclass
 class PricingChange:
     model_id: str
-    change_type: str  # "new", "price_change", "stale"
+    change_type: str  # "new", "price_change", "stale", "alias_add", "alias_change"
     classification: str  # "safe_add", "review_required", "manual_only"
     old_entry: dict | None = None
     new_entry: dict | None = None
@@ -47,6 +47,13 @@ class PricingChange:
                 f"  [{t}] {self.model_id}: not seen for "
                 f"{self.consecutive_misses} consecutive scrapes"
             )
+        elif self.change_type == "alias_add":
+            target = (self.new_entry or {}).get("target", "?")
+            return f"  [{t}] alias {self.model_id} -> {target}"
+        elif self.change_type == "alias_change":
+            old = (self.old_entry or {}).get("target", "?")
+            new = (self.new_entry or {}).get("target", "?")
+            return f"  [{t}] alias {self.model_id}: {old} -> {new}"
         return f"  [???] {self.model_id}"
 
 
@@ -161,6 +168,38 @@ def compute_diff(
     return changes, updated_last_seen
 
 
+def compute_alias_diff(
+    current_aliases: dict[str, str],
+    proposed_aliases: dict[str, str],
+) -> list[PricingChange]:
+    """Compare alias mappings from current and proposed pricing DBs."""
+    changes: list[PricingChange] = []
+    for alias in sorted(set(proposed_aliases) - set(current_aliases)):
+        changes.append(
+            PricingChange(
+                model_id=alias,
+                change_type="alias_add",
+                classification="safe_add",
+                new_entry={"target": proposed_aliases[alias]},
+            )
+        )
+    for alias in sorted(set(current_aliases) & set(proposed_aliases)):
+        old_target = current_aliases[alias]
+        new_target = proposed_aliases[alias]
+        if old_target != new_target:
+            changes.append(
+                PricingChange(
+                    model_id=alias,
+                    change_type="alias_change",
+                    classification="review_required",
+                    old_entry={"target": old_target},
+                    new_entry={"target": new_target},
+                    fields_changed=["target"],
+                )
+            )
+    return changes
+
+
 def generate_diff_report(changes: list[PricingChange], today: str = "") -> str:
     """Human-readable markdown diff report."""
     lines = ["# Pricing DB Update Proposal", ""]
@@ -171,6 +210,7 @@ def generate_diff_report(changes: list[PricingChange], today: str = "") -> str:
     new = [c for c in changes if c.change_type == "new"]
     changed = [c for c in changes if c.change_type == "price_change"]
     stale = [c for c in changes if c.change_type == "stale"]
+    aliases = [c for c in changes if c.change_type.startswith("alias_")]
 
     if new:
         lines.append(f"## New Models ({len(new)})")
@@ -188,6 +228,12 @@ def generate_diff_report(changes: list[PricingChange], today: str = "") -> str:
         lines.append(f"## Stale Models ({len(stale)}) — manual_only")
         lines.append("*(Not seen on any source for multiple consecutive scrapes.)*")
         for c in stale:
+            lines.append(c.summary_line())
+        lines.append("")
+
+    if aliases:
+        lines.append(f"## Aliases ({len(aliases)})")
+        for c in aliases:
             lines.append(c.summary_line())
         lines.append("")
 

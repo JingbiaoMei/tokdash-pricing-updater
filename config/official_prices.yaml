@@ -16,6 +16,16 @@
 models:
   # ─── Anthropic (https://platform.claude.com/docs/en/about-claude/pricing) ───
   # Cache: 5-minute write = 1.25x input, read = 0.1x input
+  claude-opus-5:
+    provider: anthropic
+    currency: USD
+    input: 5.00
+    output: 25.00
+    cache_read: 0.50
+    cache_write: 6.25
+    source: "platform.claude.com/docs/en/about-claude/pricing"
+    note: "1M context. Same pricing as claude-opus-4.5/4.6/4.7/4.8."
+
   claude-sonnet-5:
     provider: anthropic
     currency: USD
