@@ -19,6 +19,19 @@ models:
   # review_required change every run. Protecting it here pins the list price.
   # Revisit after the discount ends (~2026-06-07): if OpenRouter then matches
   # 0.6/2.4, this entry can be removed to resume normal scrape tracking.
+  # ByteDance Doubao Seed 2.1 Turbo - not on OpenRouter. Official Volcengine
+  # CNY price (3.0/15.0/0.6 in/out/cache_read, tier input length [0,256])
+  # converted at 0.137 USD/CNY. cache_write=input (no separate Volcengine
+  # cache-write fee). Short-context tier only - longer-context tiers may exist.
+  seed-2.1-turbo:
+    provider: bytedance
+    input: 0.411
+    output: 2.055
+    cache_read: 0.0822
+    cache_write: 0.411
+    unit: per_million_tokens
+    source: console.volcengine.com/ark/docs/82379/1544106
+
   minimax-m3:
     provider: minimax
     input: 0.6
