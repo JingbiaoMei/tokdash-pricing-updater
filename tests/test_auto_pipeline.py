@@ -7,6 +7,7 @@ publication failure actually fails the run.
 """
 
 import json
+import subprocess
 import sys
 from argparse import Namespace
 from pathlib import Path
@@ -17,7 +18,6 @@ from pricing_updater import cli, github_pr
 from pricing_updater.github_pr import PublishResult
 from pricing_updater.sources import openrouter
 
-SHA = "b" * 40
 
 OPENROUTER_ROWS = [
     # Existing model, input moves 1.0 -> 1.2 (20%, inside the guard).
@@ -42,9 +42,17 @@ class _Resp:
         return {"data": self.rows}
 
 
+def _git(repo: Path, *args):
+    return subprocess.run(["git", *args], cwd=str(repo), text=True, capture_output=True)
+
+
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
-    """A fake tokdash checkout, a stubbed OpenRouter, and no live official scrapers."""
+    """A committed tokdash checkout, a stubbed OpenRouter, no live official scrapers.
+
+    The checkout is a real git repo because cmd_auto reads the database as of the
+    base commit it fetched, not off the working tree.
+    """
     import yaml
     aliases = (yaml.safe_load(
         (cli._project_root() / "config/aliases.yaml").read_text()
@@ -65,10 +73,24 @@ def workspace(tmp_path, monkeypatch):
                                  "cache_read": 0.5, "cache_write": 1.0},
         },
     }, indent=2))
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.name", "Test")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "base database")
+    base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
 
     monkeypatch.setattr(openrouter.httpx, "get", lambda *a, **k: _Resp())
     from pricing_updater.sources import official_fetch
-    monkeypatch.setattr(official_fetch, "fetch_all_official", lambda timeout=30: {})
+
+    def _official(timeout=30, health=None):
+        # One adapter down: the run must say so rather than quietly reading YAML.
+        if health is not None:
+            health.append({"source": "StepFun", "status": "failed", "models": 0,
+                           "detail": "HTTP 403"})
+        return {}
+
+    monkeypatch.setattr(official_fetch, "fetch_all_official", _official)
     # Tiny fixture response, so the row floor must not trip in tests.
     monkeypatch.setattr(cli, "_load_anomaly_cfg", lambda: {
         "max_changes_per_run": 25,
@@ -76,7 +98,8 @@ def workspace(tmp_path, monkeypatch):
         "min_openrouter_rows": 1,
         "hold_explicit_zero": True,
     })
-    monkeypatch.setattr(github_pr, "fetch_base", lambda repo, base="main", run=None: SHA)
+    # The real fetch needs a remote; the pinned commit is what matters here.
+    monkeypatch.setattr(github_pr, "fetch_base", lambda repo, base="main", run=None: base_sha)
     # Artifacts and state stay in the test sandbox: a test run must not write
     # into the repository's own output/ or state/.
     monkeypatch.setenv("PRICING_UPDATER_OUTPUT_DIR", str(tmp_path / "output"))
@@ -195,3 +218,50 @@ def test_thin_source_response_is_fatal(workspace, recorder, monkeypatch):
 
     assert exc.value.code == 1
     assert recorder == []
+
+def test_official_adapter_failures_reach_the_reviewer(workspace, recorder, capsys):
+    """A dead scraper otherwise looks exactly like a day with no price changes."""
+    cli.cmd_auto(_args(workspace))
+
+    today = __import__("datetime").date.today().isoformat()
+    health = json.loads(
+        (cli._output_dir() / "proposals" / f"source_health_{today}.json").read_text()
+    )
+    assert health == [{"source": "StepFun", "status": "failed", "models": 0,
+                       "detail": "HTTP 403"}]
+    assert "StepFun failed" in recorder[0]["body"]
+
+
+def test_the_proposal_is_pinned_to_the_base_it_was_generated_against(workspace, recorder):
+    """generate -> validate -> publish share one commit, or publication is refused."""
+    cli.cmd_auto(_args(workspace))
+
+    base_file = cli._output_dir() / "proposals" / "base_sha.txt"
+    assert base_file.read_text().strip() == recorder[0]["generated_at_sha"]
+    assert recorder[0]["generated_at_sha"]
+
+
+def test_a_run_where_most_changes_look_wrong_opens_a_draft(workspace, recorder, monkeypatch):
+    """Several models moving 60% at once is a scraper signal, not a pricing day."""
+    rows = [
+        # Two existing models moving 80% each, which no provider does quietly.
+        {"id": "openai/unit-test-alpha", "pricing": {"prompt": "0.0000002",
+                                                     "completion": "0.000002"}},
+        {"id": "openai/unit-test-gamma", "pricing": {"prompt": "0.0000002",
+                                                     "completion": "0.000002"}},
+        # Three brand new models, so there is still something to propose.
+        {"id": "openai/unit-test-new", "pricing": {"prompt": "0.000003",
+                                                   "completion": "0.000008"}},
+    ]
+    monkeypatch.setattr(openrouter.httpx, "get", lambda *a, **k: _Resp(rows))
+
+    cli.cmd_auto(_args(workspace))
+
+    assert recorder[0]["draft"] is True
+
+
+def test_one_ordinary_price_move_does_not_draft_the_whole_pr(workspace, recorder):
+    """The everyday case: one reviewable repricing and one held outlier."""
+    cli.cmd_auto(_args(workspace))
+
+    assert recorder[0]["draft"] is False

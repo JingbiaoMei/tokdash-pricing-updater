@@ -94,6 +94,11 @@ def _step_scrape(providers_cfg: dict, policy_cfg: dict, output_dir: Path):
         f"{stats.get('unpriced_skipped', 0)} unpriced, "
         f"{stats.get('partial_pricing', 0)} partly priced)"
     )
+    invalid = stats.get("invalid_fields") or {}
+    if invalid:
+        # A negative or NaN rate is not a missing price the heuristics can
+        # paper over; it is a source that sent us something broken.
+        print(f"  -> {len(invalid)} row(s) carried a value that cannot be a price")
 
     return scraped, tracked, stats
 
@@ -141,8 +146,14 @@ def _step_provenance(canonical) -> dict:
     }
 
 
-def _step_fetch_official(official_cfg):
-    """Fetch from official provider sites, merge with YAML config."""
+def _step_fetch_official(official_cfg, health: list | None = None):
+    """Fetch from official provider sites, merge with YAML config.
+
+    ``health`` collects one record per adapter. Falling back to YAML is the right
+    behaviour for a broken scraper and the wrong thing to leave invisible: a
+    reviewer reading a pricing PR needs to know that half the official sources
+    were down and the numbers came from a hand-maintained file.
+    """
     from .sources.official_fetch import fetch_all_official
 
     # Start with YAML config as baseline.
@@ -151,7 +162,7 @@ def _step_fetch_official(official_cfg):
     # Overlay with live-scraped official prices (these take precedence
     # over stale YAML entries, but YAML covers providers we can't scrape).
     print("Fetching official provider pricing...", flush=True)
-    live = fetch_all_official()
+    live = fetch_all_official(health=health)
     if live:
         print(f"  -> {len(live)} models from official sources")
         for model_id, price_data in live.items():
@@ -161,6 +172,21 @@ def _step_fetch_official(official_cfg):
         print("  -> 0 models from official sources (using YAML config only)")
 
     return official_prices
+
+
+def _health_line(health: list) -> str:
+    """One line saying which official adapters did not answer."""
+    if not health:
+        return ""
+    broken = [h for h in health if h["status"] != "ok"]
+    ok = len(health) - len(broken)
+    if not broken:
+        return f"Official sources: all {len(health)} adapters answered."
+    detail = "; ".join(f"{h['source']} {h['status']} ({h['detail']})" for h in broken)
+    return (
+        f"Official sources: {ok}/{len(health)} adapters answered; the rest fell back to "
+        f"`config/official_prices.yaml` — {detail}."
+    )
 
 
 def _step_policy(canonical, policy_cfg, official_prices, family_map_cfg, fx_cfg):
@@ -371,6 +397,11 @@ def cmd_auto(args):
     alike, so reviewing the diff and merging is the whole job. Anything a guard
     distrusts is held out of the diff and listed in the body instead. Publication
     failure is a failed run, never a green one.
+
+    The base branch is fetched and read before anything is generated, and the
+    proposal is pinned to that commit. Generating from whatever is on disk is how
+    a scheduled run ends up publishing a database computed against an older one,
+    quietly reverting an edit merged in the meantime.
     """
     (providers_cfg, aliases_cfg, manual_cfg, derived_cfg,
      policy_cfg, official_cfg, family_map_cfg, fx_cfg) = _load_config()
@@ -379,8 +410,29 @@ def cmd_auto(args):
     guard_policy = GuardPolicy.load(_load_anomaly_cfg())
     output_dir = _output_dir()
     state_dir = _state_dir()
+    today = date.today().isoformat()
 
-    current_db = _load_current_db(args.tokdash_repo)
+    # ----------------------------------------------------------------- base
+    # Read the database as of the base tip, then hold that SHA all the way to
+    # publication so the proposal and the branch it lands on cannot drift apart.
+    from .github_pr import fetch_base
+
+    repo = Path(args.tokdash_repo)
+    base_sha = None
+    if args.create_pr:
+        try:
+            base_sha = fetch_base(repo, args.base)
+        except RuntimeError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Base: {args.base} at {base_sha[:7]}")
+        # The CI jobs pass this between them; publishing against anything else is
+        # refused, so a stale proposal cannot overwrite a newer edit.
+        base_path = output_dir / "proposals" / "base_sha.txt"
+        base_path.parent.mkdir(parents=True, exist_ok=True)
+        base_path.write_text(base_sha + "\n")
+
+    current_db = _load_current_db(args.tokdash_repo, base_sha)
 
     scraped, provider_map, stats = _step_scrape(providers_cfg, policy_cfg, output_dir)
 
@@ -393,9 +445,11 @@ def cmd_auto(args):
         sys.exit(1)
 
     canonical = _step_canonicalize(scraped, provider_map)
-    official_prices = _step_fetch_official(official_cfg)
+    health: list[dict] = []
+    official_prices = _step_fetch_official(official_cfg, health)
     canonical = _step_policy(canonical, policy_cfg, official_prices, family_map_cfg, fx_cfg)
     canonical, dropped = _step_guards(canonical)
+    invalid = [d for d in dropped if d.get("invalid_fields")]
 
     proposed_db = _step_render(
         canonical, manual_cfg, derived_cfg, aliases_cfg, policy_cfg, current_db,
@@ -412,6 +466,11 @@ def cmd_auto(args):
         f"  -> {len(proposable)} proposable, {len(held)} held "
         f"(of {len(changes)} computed)"
     )
+    if invalid:
+        print(
+            f"  -> {len(invalid)} model(s) held out with an unusable price value: "
+            + ", ".join(sorted(d["model_id"] for d in invalid)[:8])
+        )
 
     # Evidence a reviewer can check without rerunning anything.
     from .coverage import build_coverage, summarize, write_coverage
@@ -426,16 +485,21 @@ def cmd_auto(args):
         set((derived_cfg.get("models") or {}).keys()),
     )
     coverage_path = write_coverage(
-        output_dir / "proposals" / f"coverage_{date.today().isoformat()}.json", coverage,
+        output_dir / "proposals" / f"coverage_{today}.json", coverage,
     )
     print(summarize(coverage))
 
-    prov_path = output_dir / "proposals" / f"provenance_{date.today().isoformat()}.json"
+    prov_path = output_dir / "proposals" / f"provenance_{today}.json"
     prov_path.parent.mkdir(parents=True, exist_ok=True)
     provenance = _step_provenance(canonical)
     prov_path.write_text(json.dumps(provenance, indent=2) + "\n")
 
-    report_path = output_dir / "proposals" / f"diff_{date.today().isoformat()}.md"
+    # Which official adapters answered. A scraper that quietly died would
+    # otherwise look like a day with no official price changes.
+    health_path = output_dir / "proposals" / f"source_health_{today}.json"
+    health_path.write_text(json.dumps(health, indent=2) + "\n")
+
+    report_path = output_dir / "proposals" / f"diff_{today}.md"
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(report)
 
@@ -465,19 +529,16 @@ def cmd_auto(args):
         return
 
     from .diff import generate_pr_body
-    from .github_pr import BOT_BRANCH, fetch_base, publish
+    from .github_pr import publish
 
-    repo = Path(args.tokdash_repo)
-    try:
-        base_sha = fetch_base(repo, args.base)
-    except RuntimeError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        sys.exit(1)
+    # A volume or magnitude breach says the source changed shape, not that the
+    # world's prices did, so the PR opens as a draft for a longer look.
+    draft = guards.should_draft(decisions)
 
     body = generate_pr_body(
         decisions,
         meta={
-            "generated": date.today().isoformat(),
+            "generated": today,
             "base_sha": base_sha,
             "run_url": os.environ.get("GITHUB_SERVER_URL", "")
             and f"{os.environ['GITHUB_SERVER_URL']}/{os.environ.get('GITHUB_REPOSITORY', '')}"
@@ -487,6 +548,7 @@ def cmd_auto(args):
                 f"{len(scraped)} kept, {stats.get('unpriced_skipped', 0)} unpriced."
             ),
             "coverage_line": summarize(coverage),
+            "health_line": _health_line(health),
             "provenance": provenance,
         },
         max_rows=args.max_body_rows,
@@ -500,12 +562,13 @@ def cmd_auto(args):
         tokdash_repo=repo,
         proposed_db_path=out_path,
         body=body,
-        title=f"Pricing DB update ({date.today().isoformat()})",
+        title=f"Pricing DB update ({today})",
         branch=args.branch,
         base=args.base,
         labels=[s for s in args.labels.split(",") if s] if args.labels else None,
         dry_run=args.dry_run,
-        base_sha=base_sha,
+        generated_at_sha=base_sha,
+        draft=draft,
     )
 
     for note in result.warnings:
@@ -522,7 +585,21 @@ def cmd_auto(args):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _load_current_db(tokdash_repo: str) -> dict:
+def _load_current_db(tokdash_repo: str, at_sha: str | None = None) -> dict:
+    """Read the pricing DB the run is diffing against.
+
+    With a commit it reads what that commit holds rather than what happens to be
+    on disk, so a CI checkout cannot propose against a stale working copy.
+    """
+    if at_sha:
+        from .github_pr import read_db_at
+
+        try:
+            return read_db_at(Path(tokdash_repo), at_sha)
+        except RuntimeError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            sys.exit(1)
+
     db_path = Path(tokdash_repo) / "src" / "tokdash" / "pricing_db.json"
     if not db_path.exists():
         print(f"ERROR: {db_path} not found", file=sys.stderr)
