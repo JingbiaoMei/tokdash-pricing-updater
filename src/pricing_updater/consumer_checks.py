@@ -29,11 +29,12 @@ left open are now closed and tested.
 A test that fails or errors because of the proposal is a finding, not a broken
 run: an assertion failure and a fixture that can no longer find its model both
 mean a reviewer should look. A run is "could not run" when pytest itself refused
-or stopped (exit codes 2 to 5), wrote no result file, produced records that
-cannot be traced back to a collected test, or left a required file with no
-records. It is also "could not run" when a test errors against the database as it
-already is: a checkout whose fixtures cannot set up has not tested anything, and
-reporting that as a clean bill of health is the same mistake in a different coat.
+or stopped (an exit code other than 0 or 1), wrote no result file, produced records
+that cannot be traced back to a collected test, skipped a required check, or left
+a collected test with no record. It is also "could not run" when a test errors
+against the database as it already is: a checkout whose fixtures cannot set up
+has not tested anything. Reporting that as a clean bill of health is the same
+mistake in a different coat.
 An assertion failure already red on the current database is different in kind,
 and is recorded as pre-existing rather than blamed on the proposal.
 """
@@ -82,6 +83,9 @@ class Run:
     #: Failures and execution errors, as collected test ids. Both are findings.
     failures: set[str] = field(default_factory=set)
     errors: set[str] = field(default_factory=set)
+    #: Matched records, including skips, so an early stop cannot hide missing tests.
+    recorded: set[str] = field(default_factory=set)
+    skipped: set[str] = field(default_factory=set)
     #: How many records each check file produced, so an empty file is visible.
     per_file: dict[str, int] = field(default_factory=dict)
     #: Why this run cannot be trusted, as opposed to what it found.
@@ -90,7 +94,7 @@ class Run:
 
     @property
     def completed(self) -> bool:
-        return not self.problems
+        return not self.problems and not self.skipped
 
     @property
     def findings(self) -> set[str]:
@@ -199,22 +203,33 @@ def collect_node_ids(tokdash_repo: Path,
     return collected
 
 
-def _index(collected: dict[str, list[str]]) -> dict[tuple[str, str], str]:
+def _index(collected: dict[str, list[str]]) -> dict[tuple[str, str], str | None]:
     """Map a JUnit (classname, name) pair back to the test id it belongs to.
 
     The classname pytest writes is a dotted path, and how much of the directory
-    prefix it carries depends on rootdir, so the check file's module name is the
-    reliable part. An ambiguous or missing key is a problem, never a guess.
+    prefix it carries depends on rootdir. Keep the module and nested classes,
+    indexing module suffixes so either rootdir can be matched. Prefer the most
+    specific match, and mark ambiguous suffixes rather than guessing a test id.
     """
-    index: dict[tuple[str, str], str] = {}
+    index: dict[tuple[str, str], str | None] = {}
     for node_id in {n for ids in collected.values() for n in ids}:
-        file_part, _, name = node_id.partition("::")
-        stem = Path(file_part).stem
-        index[(stem, name)] = node_id
+        # Parameter ids can contain '::' or '.', which belong to the test name,
+        # not its class hierarchy. This is the address format pytest uses in JUnit.
+        address, bracket, params = node_id.partition("[")
+        file_part, *classes, name = address.split("::")
+        name += bracket + params
+        modules = Path(file_part).with_suffix("").parts
+        for offset in range(len(modules)):
+            classname = ".".join((*modules[offset:], *classes))
+            key = (classname, name)
+            if key in index and index[key] != node_id:
+                index[key] = None
+            else:
+                index[key] = node_id
     return index
 
 
-def _read_results(xml_path: Path, index: dict[tuple[str, str], str],
+def _read_results(xml_path: Path, index: dict[tuple[str, str], str | None],
                   run: Run) -> None:
     """Fold one JUnit file into the run, recording problems as well as findings."""
     if not xml_path.exists():
@@ -231,7 +246,13 @@ def _read_results(xml_path: Path, index: dict[tuple[str, str], str],
         name = case.get("name") or ""
         kind = next((child.tag for child in case
                      if child.tag in ("failure", "error", "skipped")), "passed")
-        node_id = index.get((classname.rsplit(".", 1)[-1], name))
+        node_id = None
+        classname_parts = classname.split(".")
+        for offset in range(len(classname_parts)):
+            key = (".".join(classname_parts[offset:]), name)
+            if key in index:
+                node_id = index[key]
+                break
         if node_id is None:
             # Includes the record pytest writes for a file it could not import,
             # which has no classname at all and would otherwise vanish.
@@ -240,11 +261,14 @@ def _read_results(xml_path: Path, index: dict[tuple[str, str], str],
                 "collected test, so this run did not test what was asked")
             continue
         file_part = node_id.split("::", 1)[0]
+        run.recorded.add(node_id)
         run.per_file[file_part] = run.per_file.get(file_part, 0) + 1
         if kind == "failure":
             run.failures.add(node_id)
         elif kind == "error":
             run.errors.add(node_id)
+        elif kind == "skipped":
+            run.skipped.add(node_id)
         elif kind == "passed":
             run.passed += 1
 
@@ -257,14 +281,25 @@ def _run_pytest(tokdash_repo: Path, checks: tuple[str, ...],
                                   "--junit-xml", str(xml_path), *checks])
     run = Run(exit_code=proc.returncode,
               detail="\n".join((proc.stdout + proc.stderr).splitlines()[-40:]))
-    if proc.returncode in INCOMPLETE_EXITS:
-        run.problems.append(f"pytest {INCOMPLETE_EXITS[proc.returncode]} "
+    if proc.returncode not in (EXIT_OK, EXIT_TESTS_FAILED):
+        reason = INCOMPLETE_EXITS.get(proc.returncode, "returned an unsupported status")
+        run.problems.append(f"pytest {reason} "
                             f"(exit code {proc.returncode})")
     _read_results(xml_path, _index(collected), run)
-    for file_part in collected:
+    if run.skipped:
+        names = ", ".join(sorted(run.skipped)[:5])
+        run.problems.append(f"{len(run.skipped)} required test(s) were skipped, so they "
+                            f"validated nothing this run: {names}")
+    for file_part, expected in collected.items():
         if not run.per_file.get(file_part):
             run.problems.append(f"{file_part} produced no test results, so it "
                                 "validated nothing this run")
+            continue
+        missing = set(expected) - run.recorded
+        if missing:
+            names = ", ".join(sorted(missing)[:5])
+            run.problems.append(f"{len(missing)} collected test(s) produced no results, "
+                                f"so this run did not finish: {names}")
     return run
 
 
@@ -366,6 +401,9 @@ def render_markdown(report: Report) -> str:
         return f"## Consumer checks\n\nNot run: {reason}\n"
 
     lines = ["## Consumer checks", ""]
+    if report.error:
+        lines.append(f"Could not complete validation: {report.error}")
+        return "\n".join(lines) + "\n"
     if not report.new_failures:
         lines.append("tokdash's consumer checks ran against the proposed database "
                      "and passed.")

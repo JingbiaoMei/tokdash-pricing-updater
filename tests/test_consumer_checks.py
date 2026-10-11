@@ -166,6 +166,111 @@ def test_an_empty_required_check_file_stops_the_verdict(tokdash_like, tmp_path):
     assert DEFAULT_CHECKS[1] in report.error
 
 
+@pytest.mark.parametrize("skip_every_file", [False, True])
+def test_skipped_required_checks_are_not_reported_as_passed(
+    tokdash_like, tmp_path, skip_every_file
+):
+    skipped = '''import pytest
+@pytest.mark.skip(reason="required check unavailable")
+def test_required():
+    assert False
+'''
+    for rel in DEFAULT_CHECKS if skip_every_file else DEFAULT_CHECKS[:1]:
+        _replace_check(tokdash_like, rel, skipped)
+    target = tokdash_like / DB_REL_PATH
+    before = target.read_text()
+
+    report = classify(tokdash_like, _proposal(tmp_path))
+
+    assert not report.publishable
+    assert "skipped" in report.error
+    assert "test_required" in report.error
+    assert "and passed" not in render_markdown(report)
+    assert target.read_text() == before
+
+
+def test_early_stop_cannot_hide_a_proposal_failure(tokdash_like, tmp_path):
+    """One record per file is not enough: the last price assertion never ran."""
+    _replace_check(tokdash_like, DEFAULT_CHECKS[0], TRIVIAL)
+    _replace_check(tokdash_like, DEFAULT_CHECKS[2], '''import json
+from pathlib import Path
+
+def test_a_preexisting_failure():
+    assert False
+
+def test_z_proposal_price():
+    db = json.loads(Path("src/tokdash/pricing_db.json").read_text())
+    assert db["models"]["alpha"]["input"] == 1.0
+''')
+    (tokdash_like / "pytest.ini").write_text("[pytest]\naddopts = --maxfail=1\n")
+    models = json.loads(json.dumps(DB["models"]))
+    models["alpha"]["input"] = 1.1
+    target = tokdash_like / DB_REL_PATH
+    before = target.read_text()
+
+    report = classify(tokdash_like, _proposal(tmp_path, models=models))
+
+    assert not report.publishable
+    assert "test_z_proposal_price" in report.error
+    assert "and passed" not in render_markdown(report)
+    assert target.read_text() == before
+
+
+@pytest.mark.parametrize("proposed_input", [1.0, 1.1])
+def test_class_and_parameterized_checks_keep_their_identity(
+    tokdash_like, tmp_path, proposed_input
+):
+    _replace_check(tokdash_like, text='''import json
+from pathlib import Path
+
+import pytest
+import tokdash
+
+def _db():
+    return json.loads((Path(tokdash.__file__).parent / "pricing_db.json").read_text())
+
+class TestPricing:
+    def test_exists(self):
+        assert "alpha" in _db()["models"]
+
+    @pytest.mark.parametrize("reference", [1.0, 1.0],
+                             ids=["plain", "source::official.price"])
+    def test_price(self, reference):
+        assert _db()["models"]["alpha"]["input"] == reference
+
+    class TestNested:
+        def test_exists(self):
+            assert "alpha" in _db()["models"]
+''')
+    models = json.loads(json.dumps(DB["models"]))
+    models["alpha"]["input"] = proposed_input
+
+    report = classify(tokdash_like, _proposal(tmp_path, models=models))
+
+    assert report.publishable, report.error
+    assert report.needs_draft is (proposed_input != 1.0)
+    expected = {
+        f"{DEFAULT_CHECKS[0]}::TestPricing::test_price[{param}]"
+        for param in ("plain", "source::official.price")
+    }
+    assert report.new_failures == (expected if proposed_input != 1.0 else set())
+
+
+def test_an_unknown_exit_status_is_not_a_success(tokdash_like, tmp_path):
+    """A plugin-controlled exit status must not bypass the completed-run check."""
+    for rel in DEFAULT_CHECKS:
+        _replace_check(tokdash_like, rel, TRIVIAL)
+    (tokdash_like / "conftest.py").write_text(
+        "def pytest_sessionfinish(session, exitstatus):\n"
+        "    session.exitstatus = 6\n"
+    )
+
+    report = classify(tokdash_like, _proposal(tmp_path))
+
+    assert not report.publishable
+    assert "exit code 6" in report.error
+
+
 def test_a_run_pytest_refused_is_an_error_not_an_empty_pass(tmp_path):
     """Exit codes outside 0 and 1 mean the tests did not run.
 
