@@ -259,3 +259,56 @@ def test_renderer_refuses_to_write_an_unusable_price():
 
     with pytest.raises(ValueError, match="input"):
         _model_to_entry(_canonical("bad", input_v=Decimal("NaN"), output_v=Decimal("2")))
+
+
+# ── official adapters: a published zero is a fact ──────────
+
+
+def _deepseek_page(prices: str) -> str:
+    """A pricing page shaped like the one the parser was written against."""
+    return f"<html>deepseek-chat {prices}</html>"
+
+
+def _deepseek_fetched(monkeypatch, html):
+    """What the DeepSeek adapter hands the overlay, with the network out of it."""
+    from pricing_updater.sources import official_deepseek, official_fetch
+
+    parsed = official_deepseek._try_parse_table(_deepseek_page(html))
+    monkeypatch.setattr(official_deepseek, "fetch_deepseek_official", lambda timeout: parsed)
+    return official_fetch._fetch_deepseek(30), parsed
+
+
+def test_an_official_free_cache_price_reaches_the_overlay(monkeypatch):
+    """DeepSeek publishes cache reads at $0, and a truthiness test read that as absent.
+
+    With the zero dropped, apply_cache_fallback guessed a positive price over a
+    real published free-cache rate, and the PR body credited DeepSeek for a number
+    it never printed.
+    """
+    fetched, parsed = _deepseek_fetched(
+        monkeypatch, "$2 per 1M tokens; cache hit $0 per 1M tokens; output $4 per 1M"
+    )
+    assert parsed and parsed[0].cache_read_per_mtok == 0
+    assert fetched["deepseek-chat"]["cache_read"] == 0
+
+    model = _canonical("deepseek-chat", Decimal("2"), Decimal("4"))
+    model.missing_fields = {"cache_read"}
+    apply_official_overlay([model], fetched)
+    apply_cache_fallback([model], {"openai": {"cache_read_factor": 0.5}})
+
+    assert model.cache_read_per_mtok == 0, "free cache reads survived the pipeline"
+    assert "cache_read" in model.explicit_zero_fields
+    assert model.field_sources["cache_read"].startswith("official:")
+
+
+def test_the_adapter_invents_no_cache_price_the_page_never_printed(monkeypatch):
+    """Two published prices are two facts. A third guessed one is not official.
+
+    The adapter used to fall back to 10% of input, which put a made-up number in
+    the column reserved for what the provider actually published, and for a free
+    model that made-up number was a 0 the overlay then defended.
+    """
+    _, parsed = _deepseek_fetched(monkeypatch, "$2 per 1M, output $4 per 1M")
+
+    assert parsed, "input and output still parsed"
+    assert parsed[0].cache_read_per_mtok is None

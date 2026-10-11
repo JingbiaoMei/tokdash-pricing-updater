@@ -70,8 +70,16 @@ def _fetch_deepseek(timeout: int) -> dict[str, dict]:
             "currency": "USD",
             "input": float(m.input_per_mtok),
             "output": float(m.output_per_mtok),
-            "cache_read": float(m.cache_read_per_mtok) if m.cache_read_per_mtok else None,
-            "cache_write": float(m.cache_write_per_mtok) if m.cache_write_per_mtok else None,
+            # `is not None`, not truthiness. Free cache reads are published as a
+            # literal 0, and a truthiness test dropped that 0 on its way into the
+            # overlay, where the cache heuristic then invented a positive price to
+            # replace a real "cache reads cost nothing".
+            "cache_read": (
+                float(m.cache_read_per_mtok) if m.cache_read_per_mtok is not None else None
+            ),
+            "cache_write": (
+                float(m.cache_write_per_mtok) if m.cache_write_per_mtok is not None else None
+            ),
             "source": m.source_url,
         }
         for m in scraped
