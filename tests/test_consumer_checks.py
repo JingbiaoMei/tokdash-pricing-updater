@@ -10,7 +10,6 @@ for a run that did not happen, and it must not claim to know why something faile
 """
 
 import json
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
