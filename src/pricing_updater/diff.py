@@ -298,6 +298,8 @@ def generate_pr_body(
         lines += [meta["source_line"], ""]
     if meta.get("coverage_line"):
         lines += [meta["coverage_line"], ""]
+    if meta.get("health_line"):
+        lines += [meta["health_line"], ""]
 
     lines += [
         f"**In this diff:** {_count(len(additions), 'addition')}, "
@@ -312,7 +314,7 @@ def generate_pr_body(
             "| Model | Provider | In / Out per MTok | Source |",
             "|---|---|---|---|",
         ]
-        lines += _rows(additions, _addition_row, max_rows)
+        lines += _rows(additions, lambda c: _addition_row(c, provenance), max_rows)
         lines.append("")
 
     if repricing:
@@ -359,32 +361,86 @@ def _rows(items, render_row, max_rows: int) -> list[str]:
     return rows
 
 
-def _addition_row(change) -> list[str]:
+def _addition_row(change, provenance: dict | None = None) -> list[str]:
     entry = change.new_entry or {}
     if change.change_type == "alias_add":
         return [f"| `{change.model_id}` | alias | -> `{entry.get('target', '?')}` | aliases |"]
+    provenance = provenance or {}
+    # An addition is usually settled by one source for both core fields, but an
+    # official page and an aggregator can disagree, so name the one that won and
+    # the price the other one showed.
+    origins = {
+        origin for fld in ("input", "output")
+        if (origin := _settled_source(provenance, change.model_id, fld))
+    }
+    labels = sorted(origins)
+    where = labels[0] if len(labels) == 1 else " / ".join(labels) if labels \
+        else str(entry.get("source", "") or "?")
     return [
         f"| `{change.model_id}` | {entry.get('provider', '?')} "
         f"| {entry.get('input', '?')} / {entry.get('output', '?')} "
-        f"| {entry.get('source', '')} |"
+        f"| {_escape(where)} |"
     ]
 
 
 def _repricing_rows(change, provenance: dict | None = None) -> list[str]:
     entry = change.new_entry or {}
     provenance = provenance or {}
-    sources = (provenance.get(change.model_id) or {}).get("field_sources", {})
     rows = []
     for fld in change.fields_changed:
         old_v = (change.old_entry or {}).get(fld, "?")
         new_v = entry.get(fld, "?")
+        # Name the source that settled this field. Falling back to the entry's
+        # own source_url credits OpenRouter for a price the official page won,
+        # which is the one thing the evidence column exists to prevent.
+        settled = _settled_source(provenance, change.model_id, fld)
         # A cache rate that moved only because the input rate moved is arithmetic,
         # not a published change, and a reviewer should be able to see that.
-        label = fld + " (derived)" if sources.get(fld) == "derived_from_input" else fld
+        label = fld + " (derived)" if settled == "derived_from_input" else fld
         rows.append(
-            f"| `{change.model_id}` | {label} | {old_v} | {new_v} | {entry.get('source', '')} |"
+            f"| `{change.model_id}` | {label} | {old_v} | {new_v} | "
+            f"{_escape(_evidence_cell(settled, provenance, change.model_id, fld, entry))} |"
         )
     return rows or [f"| `{change.model_id}` | - | - | - | |"]
+
+
+def _settled_source(provenance: dict, model_id: str, fld: str) -> str:
+    """The provenance label for the source whose number ended up in the DB."""
+    return str(((provenance.get(model_id) or {}).get("field_sources") or {}).get(fld) or "")
+
+
+def _evidence_cell(settled: str, provenance: dict, model_id: str, fld: str, entry: dict) -> str:
+    """Where this number came from, and the competing value when there was one."""
+    seen = ((provenance.get(model_id) or {}).get("evidence") or {}).get(fld) or {}
+    if settled.startswith("official"):
+        cell = settled
+        rival = _other_price(seen, "official_usd")
+        if rival is not None:
+            cell += f"; OpenRouter listed {_money(rival)}"
+        return cell
+    if settled == "derived_from_input":
+        return "derived from the input rate, not published"
+    return settled or str(entry.get("source", "") or "")
+
+
+def _other_price(evidence: dict, winner_key: str):
+    """The losing source's value for a field, if a second source saw one."""
+    for key, value in evidence.items():
+        if key != winner_key and value is not None:
+            return value
+    return None
+
+
+def _money(value) -> str:
+    try:
+        return f"${float(value):g}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _escape(text: str) -> str:
+    """Keep a URL or pipe in a source label from breaking the table."""
+    return str(text).replace("|", "\\|")
 
 
 def _count(n: int, noun: str) -> str:
