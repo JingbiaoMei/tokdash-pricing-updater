@@ -281,3 +281,43 @@ def test_one_ordinary_price_move_does_not_draft_the_whole_pr(workspace, recorder
     cli.cmd_auto(_args(workspace))
 
     assert recorder[0]["draft"] is False
+
+
+def test_a_run_that_proposes_nothing_leaves_nothing_to_publish(workspace, recorder, monkeypatch):
+    """Yesterday's proposal cannot ride along on today's base SHA.
+
+    The publication artifacts are cleared before generation rather than written
+    on the success path, because every early return below the diff is a run with
+    no proposal, and the publish job reads those files by name.
+    """
+    cli.cmd_auto(_args(workspace))
+    out = cli._output_dir() / "proposals"
+    assert (out / "proposed_pricing_db.json").exists()
+    assert (out / "publish_plan.json").exists()
+    assert (out / "pr_body.md").exists()
+    published = len(recorder)
+
+    # Main moves, and every source-derived change is now too large to propose.
+    target = workspace / github_pr.TARGET_REL_PATH
+    db = json.loads(target.read_text())
+    db["models"]["human-added"] = {"provider": "openai", "input": 3, "output": 6,
+                                    "cache_read": 0.3, "cache_write": 3}
+    target.write_text(json.dumps(db))
+    _git(workspace, "add", "-A")
+    _git(workspace, "commit", "-qm", "a human adds a model")
+    tip = _git(workspace, "rev-parse", "HEAD").stdout.strip()
+    monkeypatch.setattr(github_pr, "fetch_base", lambda repo, base="main", run=None: tip)
+    monkeypatch.setattr(openrouter.httpx, "get", lambda *a, **k: _Resp([
+        {"id": "openai/unit-test-alpha",
+         "pricing": {"prompt": "0.0000001", "completion": "0.000002"}},
+    ]))
+
+    # Nothing proposable is a clean run that publishes nothing, so the artifacts a
+    # publisher reads by name have to be gone, not merely unused.
+    cli.cmd_auto(_args(workspace))
+
+    assert len(recorder) == published, "a run with no proposal must not publish"
+    assert not (out / "proposed_pricing_db.json").exists()
+    assert not (out / "publish_plan.json").exists()
+    assert not (out / "pr_body.md").exists()
+    assert (out / "base_sha.txt").read_text().strip() == tip

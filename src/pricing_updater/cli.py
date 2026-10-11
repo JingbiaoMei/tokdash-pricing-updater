@@ -51,6 +51,29 @@ def _state_dir() -> Path:
     return Path(override) if override else _project_root() / "state"
 
 
+# Files a later job publishes from. They describe one run, so a run that ends
+# without a proposal has to take them with it: a reused output directory left
+# yesterday's proposal next to today's base SHA, and the publish job happily
+# pushed the old numbers under the new pin.
+PUBLICATION_ARTIFACTS = (
+    "proposed_pricing_db.json",
+    "pr_body.md",
+    "publish_plan.json",
+    "base_sha.txt",
+)
+
+
+def _clear_publication_artifacts(proposals_dir: Path) -> list[Path]:
+    """Remove the files a publication would be built from. Returns what it removed."""
+    removed = []
+    for name in PUBLICATION_ARTIFACTS:
+        path = proposals_dir / name
+        if path.exists():
+            path.unlink()
+            removed.append(path)
+    return removed
+
+
 def _load_yaml(name: str) -> dict:
     path = _project_root() / "config" / name
     return yaml.safe_load(path.read_text()) or {}
@@ -412,6 +435,14 @@ def cmd_auto(args):
     state_dir = _state_dir()
     today = date.today().isoformat()
 
+    # Nothing downstream may find a proposal from an earlier run. Cleared up front
+    # rather than on the success path, because every early return below is a run
+    # that produced no proposal and must publish nothing.
+    proposals_dir = output_dir / "proposals"
+    proposals_dir.mkdir(parents=True, exist_ok=True)
+    for stale in _clear_publication_artifacts(proposals_dir):
+        print(f"Stale artifact removed: {stale.name}")
+
     # ----------------------------------------------------------------- base
     # Read the database as of the base tip, then hold that SHA all the way to
     # publication so the proposal and the branch it lands on cannot drift apart.
@@ -504,11 +535,11 @@ def cmd_auto(args):
     report_path.write_text(report)
 
     if not changes:
-        print("No changes detected. Pricing DB is up to date.")
+        print("No changes detected. Pricing DB is up to date. Nothing to publish.")
         return
 
     if not proposable:
-        print("Nothing proposable. Findings are held; see the run artifacts.")
+        print("Nothing proposable. Findings are held, and no proposal was written.")
         for decision in held[:10]:
             print(f"  held: {decision.change.model_id} ({decision.change.change_type}): "
                   f"{'; '.join(decision.reasons)}")
