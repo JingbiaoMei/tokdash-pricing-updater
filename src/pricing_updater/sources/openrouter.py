@@ -4,39 +4,51 @@ from __future__ import annotations
 
 import json
 import re
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 
 import httpx
 
-from .base import CORE_PRICE_FIELDS, ScrapedModel
+from .base import CORE_PRICE_FIELDS, ScrapedModel, clean_price
 
 OPENROUTER_API = "https://openrouter.ai/api/v1/models"
 
 _MILLION = Decimal("1000000")
 
 
-def _parse_per_mtok(raw) -> tuple[Decimal | None, bool]:
+# The four price fields OpenRouter publishes, as (canonical, api) pairs.
+PRICE_KEYS = (
+    ("input", "prompt"),
+    ("output", "completion"),
+    ("cache_read", "input_cache_read"),
+    ("cache_write", "input_cache_write"),
+)
+
+
+def _parse_per_mtok(raw) -> tuple[Decimal | None, str]:
     """Parse one OpenRouter per-token price into per-MTok.
 
-    Returns ``(value, published_zero)``:
+    Returns ``(value, kind)``, where kind says what the field actually was:
 
-    - ``(Decimal, False)`` a real price.
-    - ``(None, True)`` the source published 0, i.e. the field is free.
-    - ``(None, False)`` absent or unparseable, i.e. we simply do not know.
+    - ``(Decimal, "price")`` a real price.
+    - ``(None, "zero")`` the source published 0, i.e. the field is free.
+    - ``(None, "absent")`` the key is missing, i.e. we do not know.
+    - ``(None, "invalid")`` a value that cannot be a price: negative, NaN,
+      infinity, or unparseable. A broken field is not a price, and a number
+      that survives parsing looks valid to every guard downstream.
 
-    The distinction is load-bearing. Treating an absent price as free is how a
-    paid model ends up recorded at $0 and bills as nothing forever.
+    The distinction between absent and zero is load-bearing. Treating an absent
+    price as free is how a paid model ends up recorded at $0 and bills as
+    nothing forever.
     """
     if raw is None:
-        return None, False
-    try:
-        d = Decimal(str(raw))
-    except (InvalidOperation, ValueError):
-        return None, False
-    if d == 0:
-        return None, True
-    return d * _MILLION, False
+        return None, "absent"
+    value = clean_price(raw)
+    if value is None:
+        return None, "invalid"
+    if value == 0:
+        return None, "zero"
+    return value * _MILLION, "price"
 
 
 def fetch_openrouter(
@@ -93,21 +105,21 @@ def fetch_openrouter(
 
         values: dict[str, Decimal | None] = {}
         zeros: set[str] = set()
-        for field_name, api_key in (
-            ("input", "prompt"),
-            ("output", "completion"),
-            ("cache_read", "input_cache_read"),
-            ("cache_write", "input_cache_write"),
-        ):
-            value, published_zero = _parse_per_mtok(pricing.get(api_key))
+        invalid: set[str] = set()
+        for field_name, api_key in PRICE_KEYS:
+            value, kind = _parse_per_mtok(pricing.get(api_key))
             values[field_name] = value
-            if published_zero:
+            if kind == "zero":
                 zeros.add(field_name)
+            elif kind == "invalid":
+                invalid.add(field_name)
 
         # A published zero is known data, not a gap: it stays out of missing and
         # lands in explicit_zero_fields, where the guards can hold it for a human
-        # instead of the model vanishing from the proposal.
-        missing = {name for name, value in values.items() if value is None} - zeros
+        # instead of the model vanishing from the proposal. An invalid value is
+        # the opposite: it is a gap the source did not admit to, so it counts as
+        # missing rather than being reported as a free or negative price.
+        missing = ({n for n, v in values.items() if v is None} - zeros) | invalid
 
         core_missing = missing.intersection(CORE_PRICE_FIELDS)
         # No billable rate on either side, whether absent or published free.
@@ -127,6 +139,8 @@ def fetch_openrouter(
 
         if core_missing and stats is not None:
             stats["partial_pricing"] += 1
+        if invalid and stats is not None:
+            stats.setdefault("invalid_fields", {})[model_id] = sorted(invalid)
 
         results.append(
             ScrapedModel(
@@ -142,6 +156,7 @@ def fetch_openrouter(
                 context_length=m.get("context_length"),
                 missing_fields=missing,
                 explicit_zero_fields=zeros,
+                invalid_fields=invalid,
                 raw_extra={
                     k: v
                     for k, v in pricing.items()

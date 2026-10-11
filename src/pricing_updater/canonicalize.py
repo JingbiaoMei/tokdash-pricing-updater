@@ -31,6 +31,7 @@ class CanonicalModel:
     # Data-quality flags carried from the scraper. See ScrapedModel.
     missing_fields: set = field(default_factory=set)
     explicit_zero_fields: set = field(default_factory=set)
+    invalid_fields: set = field(default_factory=set)
 
     # Provenance, kept out of pricing_db.json so the consumer schema is stable.
     # field_sources: field -> label of the source that supplied the final value.
@@ -89,6 +90,7 @@ def canonicalize(
                 source_name=m.source_name,
                 missing_fields=set(m.missing_fields),
                 explicit_zero_fields=set(m.explicit_zero_fields),
+                invalid_fields=set(m.invalid_fields),
                 field_sources=sources,
                 evidence=evidence,
             )

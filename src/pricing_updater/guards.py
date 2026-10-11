@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 from .canonicalize import CanonicalModel
 from .diff import PricingChange
+from .sources.base import PRICE_ATTRS, clean_price
 
 CORE_FIELDS = ("input", "output")
 
@@ -53,27 +54,66 @@ class Decision:
     reasons: list[str] = field(default_factory=list)
 
 
+def invalid_prices(model: CanonicalModel) -> list[str]:
+    """Fields holding a value that cannot be published.
+
+    A None, NaN, infinite or negative rate. These are distinct from a *missing*
+    field: the source said something, and what it said cannot be a price, so a
+    guard that only asks "is this field missing?" would wave it through.
+    """
+    bad: list[str] = []
+    for name, attr in PRICE_ATTRS:
+        if clean_price(getattr(model, attr, None)) is None:
+            bad.append(name)
+    return bad
+
+
 def partition_unpriceable(
     models: list[CanonicalModel],
 ) -> tuple[list[CanonicalModel], list[dict]]:
-    """Split models whose core prices are all present from those that are not.
+    """Split publishable models from the ones that must not be rendered.
 
-    A model missing input or output must not be rendered with a zero, which is
-    what a plain ``or Decimal("0")`` fallback would do. Dropping it silently
-    would be just as bad, so the dropped rows come back for reporting.
+    Two separate reasons a model is held out. A missing core price must not be
+    rendered with a zero, which is what a plain ``or Decimal("0")`` fallback
+    would do; and a value that is negative or non-finite must not be rendered at
+    all. Dropping either silently would be as bad as publishing it, so the rows
+    come back for reporting.
     """
     usable: list[CanonicalModel] = []
     dropped: list[dict] = []
 
     for m in models:
+        bad = invalid_prices(m)
+        if bad:
+            dropped.append({
+                "model_id": m.canonical_id,
+                "provider": m.provider,
+                "missing_fields": [],
+                "invalid_fields": bad,
+                "source": m.source_url or m.source_name,
+                "reason": "source published an unusable value for " + ", ".join(bad),
+            })
+            continue
+
         missing_core = sorted(set(m.missing_fields).intersection(CORE_FIELDS))
         if missing_core:
+            # "No price" and "a price that cannot be a price" send a reviewer to
+            # different places, so say which one happened to each field.
+            broken = sorted(set(m.invalid_fields).intersection(missing_core))
+            absent = [f for f in missing_core if f not in broken]
+            parts = []
+            if broken:
+                parts.append("published an unusable value for " + ", ".join(broken))
+            if absent:
+                parts.append("supplied no price for " + ", ".join(absent))
+            reason = "source " + "; ".join(parts)
             dropped.append({
                 "model_id": m.canonical_id,
                 "provider": m.provider,
                 "missing_fields": missing_core,
+                "invalid_fields": broken,
                 "source": m.source_url or m.source_name,
-                "reason": "source supplied no price for " + ", ".join(missing_core),
+                "reason": reason,
             })
         else:
             usable.append(m)
@@ -182,6 +222,35 @@ def _as_float(value) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+# Guard reasons that say something about the run rather than one price.
+RUN_LEVEL_MARKERS = ("max_changes_per_run", "min_openrouter_rows")
+# The guard that fires when a source's numbers move further than a price should.
+MAGNITUDE_MARKER = "max_single_field_change_pct"
+
+
+def should_draft(decisions: list[Decision]) -> bool:
+    """True when the run as a whole looks suspect, not when one price looks odd.
+
+    One new entry at zero, or one field that moved a long way, is an ordinary
+    review question and belongs in an ordinary PR. A volume breach, a thin source
+    response, or a run where most of the computed changes tripped the magnitude
+    guard means the source or a scraper changed shape; that PR should not sit
+    there looking merge-ready, so it opens as a draft.
+    """
+    held = [d for d in decisions if not d.proposable]
+    if not held or not decisions:
+        return False
+
+    if any(
+        any(marker in reason for marker in RUN_LEVEL_MARKERS)
+        for d in held for reason in d.reasons
+    ):
+        return True
+
+    magnitude = [d for d in held if any(MAGNITUDE_MARKER in r for r in d.reasons)]
+    return len(magnitude) >= max(2, len(decisions) // 2)
 
 
 def proposable_changes(decisions: list[Decision]) -> list[PricingChange]:
