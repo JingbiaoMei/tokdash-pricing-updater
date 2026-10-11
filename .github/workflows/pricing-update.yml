@@ -135,34 +135,46 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Require a cross-repo token
+      - name: Check for a cross-repo token
+        id: gate
         env:
           BOT_TOKEN: ${{ secrets.PRICING_BOT_TOKEN }}
         run: |
           if [ -z "$BOT_TOKEN" ]; then
-            echo "::error::PRICING_BOT_TOKEN is not set. The updater's own GITHUB_TOKEN cannot write to another repository, and a PR opened with it may also wait on a manual approval before tokdash CI runs. Configure a GitHub App installation token or a fine-grained PAT scoped to $TOKDASH_REPO with contents:write and pull-requests:write."
-            exit 1
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Publication disabled::PRICING_BOT_TOKEN is not set, so the proposal was generated and validated but not published. The updater's own GITHUB_TOKEN cannot write to another repository, and a PR opened with it may also wait on manual approval before tokdash CI runs. Configure a GitHub App installation token or a fine-grained PAT scoped to $TOKDASH_REPO with contents:write and pull-requests:write."
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # A missing secret is a configuration state, so it skips with a warning
+      # rather than reddening every scheduled run. A secret that is present and
+      # then fails to publish is a real failure and does exit non-zero.
+
+      - if: steps.gate.outputs.enabled == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - if: steps.gate.outputs.enabled == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: proposal
           path: proposal
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - if: steps.gate.outputs.enabled == 'true'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
+      - if: steps.gate.outputs.enabled == 'true'
+        name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install httpx pyyaml
 
-      - name: Checkout tokdash with write access
+      - if: steps.gate.outputs.enabled == 'true'
+        name: Checkout tokdash with write access
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.TOKDASH_REPO }}
@@ -170,7 +182,8 @@ jobs:
           token: ${{ secrets.PRICING_BOT_TOKEN }}
           persist-credentials: true
 
-      - name: Configure committer
+      - if: steps.gate.outputs.enabled == 'true'
+        name: Configure committer
         working-directory: tokdash
         run: |
           git config user.name "pricing-bot"
@@ -179,7 +192,8 @@ jobs:
       # Re-runs refresh the one open PR on the bot branch instead of stacking a
       # second one. A stale proposal can never be published: publish re-fetches
       # the base and refuses a diff wider than the pricing DB.
-      - name: Publish
+      - if: steps.gate.outputs.enabled == 'true'
+        name: Publish
         env:
           GH_TOKEN: ${{ secrets.PRICING_BOT_TOKEN }}
         run: |
