@@ -1,81 +1,58 @@
-"""Scrape official Moonshot/Kimi pricing from platform.moonshot.ai.
-
-The official pricing page is a Next.js SPA that does not serve pricing
-data in the initial HTML.  This module attempts to fetch it anyway —
-if Moonshot adds server-side rendering or an API endpoint, it will
-start working automatically.
-
-Until then, config/official_prices.yaml provides the fallback.
-"""
-
+"""Read Kimi's official pricing document, including literal MDX tables."""
 from __future__ import annotations
+
+import re
 
 import httpx
 
-from ._html_table import extract_table_rows, parse_price
+from ._pricing_tables import html_tables, mdx_tables, plain, price_columns, usd_price
 
-MOONSHOT_PRICING_URL = "https://platform.moonshot.ai/docs/pricing/chat"
-
-_MODEL_MAP = {
-    "kimi k2.5": "kimi-k2.5",
-    "kimi-k2.5": "kimi-k2.5",
-    "kimi k2 thinking": "kimi-k2-thinking",
-    "kimi-k2-thinking": "kimi-k2-thinking",
-    "kimi k2 0905": "kimi-k2-0905",
-    "kimi-k2-0905": "kimi-k2-0905",
-    "kimi k2 0711": "kimi-k2",
-    "kimi k2": "kimi-k2",
-    "kimi-k2": "kimi-k2",
-}
+MOONSHOT_PRICING_URL = "https://platform.kimi.ai/docs/pricing/chat"
+MOONSHOT_PRICING_DOCUMENT_URL = MOONSHOT_PRICING_URL + ".md"
 
 
 def fetch_moonshot_official(timeout: int = 30) -> dict[str, dict]:
-    """Attempt to fetch Moonshot pricing. Returns empty dict if SPA shell."""
-    try:
-        resp = httpx.get(MOONSHOT_PRICING_URL, timeout=timeout, follow_redirects=True)
-        resp.raise_for_status()
-    except httpx.HTTPError as e:
-        print(f"  WARNING: Could not fetch Moonshot pricing: {e}")
-        return {}
-
-    html = resp.text
-
-    # Detect SPA shell: real pricing page would have dollar signs in table rows.
-    if "$" not in html:
-        return {}
-
-    return _parse_pricing(html)
-
-
-def _parse_pricing(html: str) -> dict[str, dict]:
-    results: dict[str, dict] = {}
-
-    for row in extract_table_rows(html):
-        if len(row) < 3:
+    for url in (MOONSHOT_PRICING_DOCUMENT_URL, MOONSHOT_PRICING_URL):
+        try:
+            response = httpx.get(url, timeout=timeout, follow_redirects=True)
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            print(f"  WARNING: Could not fetch Kimi pricing at {url}: {exc}")
             continue
+        result = _parse_pricing(response.text)
+        if result:
+            return result
+    return {}
 
-        model_cell = row[0].lower().strip()
-        canonical = None
-        for page_name, canon in _MODEL_MAP.items():
-            if page_name in model_cell:
-                canonical = canon
-                break
-        if canonical is None:
+
+def _parse_pricing(document: str) -> dict[str, dict]:
+    results = {}
+    for table in [*mdx_tables(document), *html_tables(document)]:
+        if not table:
             continue
-
-        prices = [parse_price(c) for c in row[1:]]
-        if not prices or prices[0] is None:
+        headers = [plain(cell).lower() for cell in table[0]]
+        model_column = next((i for i, label in enumerate(headers)
+                             if label in ("model", "model name")), None)
+        fields = price_columns(headers)
+        unit_column = next((i for i, label in enumerate(headers) if label == "unit"), None)
+        if model_column is None or not {"input", "output"} <= fields.keys():
             continue
-
-        entry: dict = {
-            "provider": "moonshotai",
-            "currency": "USD",
-            "input": prices[0],
-            "source": MOONSHOT_PRICING_URL,
-        }
-        if len(prices) >= 2 and prices[1] is not None:
-            entry["output"] = prices[1]
-
-        results[canonical] = entry
-
+        if unit_column is None:
+            continue
+        for row in table[1:]:
+            if len(row) != len(headers):
+                continue
+            if not re.fullmatch(r"(?:1\s*M|1,000,000)\s*tokens", plain(row[unit_column]), re.I):
+                continue
+            name = plain(row[model_column]).lower()
+            if not re.fullmatch(r"kimi-[a-z0-9][a-z0-9.-]*", name):
+                continue
+            prices = {field: usd_price(row[index]) for field, index in fields.items()}
+            if prices["input"] is None or prices["output"] is None:
+                continue
+            results[name] = {
+                "provider": "moonshotai", "currency": "USD",
+                "source": MOONSHOT_PRICING_URL,
+                **{field: float(value) for field, value in prices.items() if value is not None},
+            }
     return results

@@ -1,72 +1,56 @@
-"""Scrape official Xiaomi/MiMo pricing from platform.xiaomimimo.com.
-
-Xiaomi's platform may or may not serve pricing in the initial HTML.
-This module attempts to fetch; falls back to config/official_prices.yaml.
-"""
-
+"""Read Xiaomi's overseas real-time API tariff from its public pricing docs."""
 from __future__ import annotations
+
+import re
 
 import httpx
 
-from ._html_table import extract_table_rows, parse_price
+from ._pricing_tables import html_tables, plain, price_columns, usd_price
 
-XIAOMI_PRICING_URL = "https://platform.xiaomimimo.com"
-
-_MODEL_MAP = {
-    "mimo-v2-flash": "mimo-v2-flash",
-    "mimo v2 flash": "mimo-v2-flash",
-}
+XIAOMI_PRICING_URL = "https://mimo.mi.com/static/docs/price/pay-as-you-go.md"
 
 
 def fetch_xiaomi_official(timeout: int = 30) -> dict[str, dict]:
-    """Attempt to fetch Xiaomi MiMo pricing. Returns empty dict if no data."""
-    for url in [XIAOMI_PRICING_URL, f"{XIAOMI_PRICING_URL}/pricing"]:
-        try:
-            resp = httpx.get(url, timeout=timeout, follow_redirects=True)
-            resp.raise_for_status()
-        except httpx.HTTPError:
+    try:
+        response = httpx.get(XIAOMI_PRICING_URL, timeout=timeout, follow_redirects=True)
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        print(f"  WARNING: Could not fetch Xiaomi pricing: {exc}")
+        return {}
+    return _parse_pricing(response.text, XIAOMI_PRICING_URL)
+
+
+def _parse_pricing(document: str, source_url: str = XIAOMI_PRICING_URL) -> dict[str, dict]:
+    results = {}
+    if not re.search(r"Overseas\s*[:：]\s*(?:dollar|USD|\$)\s*/\s*(?:1\s*)?M\s*tokens", document, re.I):
+        return results
+    # This is a published cache-write tariff, not a guess from the input price.
+    free_write = bool(re.search(r"Cache Write\s*:\s*(?:Limited-time )?Free\b", document, re.I))
+    for table in html_tables(document):
+        if not table:
             continue
-
-        html = resp.text
-        if "$" not in html:
+        headers = [plain(cell).lower() for cell in table[0]]
+        model_column = next((i for i, label in enumerate(headers)
+                             if label in ("model", "model name")), None)
+        inference_column = next((i for i, label in enumerate(headers)
+                                 if label == "inference type"), None)
+        fields = price_columns(headers)
+        if model_column is None or inference_column is None or not {"input", "output"} <= fields.keys():
             continue
-
-        results = _parse_pricing(html, url)
-        if results:
-            return results
-
-    return {}
-
-
-def _parse_pricing(html: str, source_url: str) -> dict[str, dict]:
-    results: dict[str, dict] = {}
-
-    for row in extract_table_rows(html):
-        if len(row) < 3:
-            continue
-
-        model_cell = row[0].lower().strip()
-        canonical = None
-        for page_name, canon in _MODEL_MAP.items():
-            if page_name in model_cell:
-                canonical = canon
-                break
-        if canonical is None:
-            continue
-
-        prices = [parse_price(c) for c in row[1:]]
-        if not prices or prices[0] is None:
-            continue
-
-        entry: dict = {
-            "provider": "xiaomi",
-            "currency": "USD",
-            "input": prices[0],
-            "source": source_url,
-        }
-        if len(prices) >= 2 and prices[1] is not None:
-            entry["output"] = prices[1]
-
-        results[canonical] = entry
-
+        for row in table[1:]:
+            if len(row) != len(headers) or plain(row[inference_column]).lower() != "real-time api":
+                continue
+            match = re.search(r"\bmimo-[a-z0-9][a-z0-9.-]*\b", row[model_column], re.I)
+            if not match:
+                continue
+            prices = {field: usd_price(row[index]) for field, index in fields.items()}
+            # An explicit dollar sign distinguishes overseas rates from RMB.
+            if prices["input"] is None or prices["output"] is None:
+                continue
+            if free_write and "cache_write" not in fields:
+                prices["cache_write"] = 0
+            results[match.group().lower()] = {
+                "provider": "xiaomi", "currency": "USD", "source": source_url,
+                **{field: float(value) for field, value in prices.items() if value is not None},
+            }
     return results

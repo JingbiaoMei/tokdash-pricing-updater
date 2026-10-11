@@ -5,14 +5,11 @@ name: Add new model prices
 # consumer checks, and nothing merges here.
 
 on:
-  # Enable after a successful manual pilot and PRICING_BOT_TOKEN setup. The bot
-  # only adds new model entries; existing prices and aliases are preserved.
-  # Scheduled runs only execute
-  # from the default branch, can be delayed or coalesced, and stop after 60 days
-  # of repo inactivity.
-  #
-  # schedule:
-  #   - cron: '0 6 * * 2,4'
+  # Tuesday and Friday at 06:17 UTC. Avoid the busy start of the hour.
+  # The bot only adds new models; existing prices and aliases are preserved.
+  # Schedules run from the default branch and can stop after 60 inactive days.
+  schedule:
+    - cron: '17 6 * * 2,5'
   workflow_dispatch:
     inputs:
       dry_run:

@@ -30,9 +30,10 @@ concern separate.
        │                     ┌──────┴──────────────────┐
        │                     │ Z.ai   docs.z.ai        │ live
        │                     │ MiniMax platform.minimax │ live
-       │                     │ Moonshot (SPA fallback)  │ YAML
-       │                     │ Xiaomi  (SPA fallback)   │ YAML
+       │                     │ Kimi pricing docs (MDX)  │ live
+       │                     │ Xiaomi MiMo pricing docs │ live
        │                     │ DeepSeek api-docs        │ live
+       │                     │ StepFun pricing docs     │ live
        │                     │ Anthropic (matches OR)   │ YAML
        │                     └──────┬──────────────────┘
        │                            │
@@ -554,8 +555,8 @@ tokdash-pricing-updater/
 │   │   ├── official_fetch.py   # Orchestrator for all official adapters
 │   │   ├── official_zai.py     # Z.ai/GLM  (docs.z.ai — live)
 │   │   ├── official_minimax.py # MiniMax    (platform.minimax.io — live)
-│   │   ├── official_moonshot.py# Moonshot   (SPA — falls back to YAML)
-│   │   ├── official_xiaomi.py  # Xiaomi     (SPA — falls back to YAML)
+│   │   ├── official_moonshot.py# Kimi       (public pricing MDX)
+│   │   ├── official_xiaomi.py  # Xiaomi     (public pricing Markdown)
 │   │   └── official_deepseek.py# DeepSeek   (api-docs.deepseek.com — live)
 │   ├── official_stepfun.py     # StepFun    (platform.stepfun.ai — live)
 │   ├── canonicalize.py         # Source IDs → tokdash pricing_db keys
@@ -609,9 +610,8 @@ Two workflows live in `.github/workflows/`:
 - `ci.yml` runs the suite on 3.10 and 3.12 and **fails on any skipped test**, because
   a clean clone used to skip ten of them silently when their fixture lived in
   gitignored `output/`.
-- `pricing-update.yml` runs on demand today; the Tuesday/Thursday schedule is
-  prepared but remains commented out until the credential and a manual pilot
-  are ready. It runs on **GitHub-hosted Ubuntu runners**, so your local machine
+- `pricing-update.yml` runs **Tuesday and Friday at 06:17 UTC**, and also on
+  demand through manual dispatch. It runs on **GitHub-hosted Ubuntu runners**, so your local machine
   does not need to be running. It runs as three jobs:
   **generate**, **validate** (tokdash's own pricing checks run against the proposed
   database before anything is pushed), and **publish**. All three work on one base
@@ -648,7 +648,9 @@ own `GITHUB_TOKEN` cannot write to another repository, so set `PRICING_BOT_TOKEN
 to a fine-grained PAT with `contents: write` and `pull-requests: write` on
 `JingbiaoMei/Tokdash`. A GitHub App is another option, but requires a token-minting
 step in the workflow; saving an installation token as a permanent secret would
-stop working when it expires after one hour. Scheduled runs only execute from the
+stop working when it expires after one hour. A non-expiring fine-grained PAT is
+supported; the workflow does not require a 90-day renewal interval.
+Scheduled runs only execute from the
 default branch, can be delayed or coalesced, and are disabled after 60 days of repo
 inactivity, which is why `workflow_dispatch` is a first-class path.
 
@@ -664,8 +666,10 @@ inactivity, which is why `workflow_dispatch` is a first-class path.
    with no eligible new models correctly produces no PR.
 4. Run once with `dry_run` unchecked. Review the resulting Tokdash PR and its CI;
    the bot only updates its own proposal branch and never merges it.
-5. After that pilot, uncomment the Tuesday/Thursday 06:00 UTC cron in
-   `.github/workflows/pricing-update.yml` and merge that edit into `main`.
+5. The Tuesday/Friday 06:17 UTC schedule is enabled in
+   `.github/workflows/pricing-update.yml`. Review the first real additions PR
+   and its CI before merging; a pilot with no eligible models does not exercise
+   an actual branch push or PR creation.
 
 No local service, cron job or always-on computer is required. Making the updater
 public is a separate repository visibility choice; GitHub Actions also runs it
@@ -673,8 +677,7 @@ while private.
 
 ## What is not finished
 
-State as of 2026-10-11. Historical scrape observations below predate the
-additions-only rule; use the latest run artifacts for current source health.
+State as of 2026-10-12. Use the latest run artifacts for current source health.
 
 1. **Existing-price maintenance is intentionally manual.** The updater only adds
    new model entries. Repricing, removals and aliases remain held. They do not
@@ -692,11 +695,10 @@ additions-only rule; use the latest run artifacts for current source health.
 4. **Discovery limits new additions.** Official prices overlay models discovered
    through OpenRouter, so official-only models may not be discovered. Every
    existing model is preserved by policy, regardless of discovery coverage.
-5. **Three of six official adapters are not answering.** The last run recorded
-   DeepSeek parsing nothing and Moonshot and Xiaomi returning nothing, so those
-   numbers came from `config/official_prices.yaml`. The run says so in
-   `source_health_*.json` and in the PR body now, which is the fix for the
-   invisibility; the adapters themselves still need work.
+5. **Official pages can change again.** DeepSeek, Kimi and Xiaomi now read their
+   current public pricing documents. Models omitted by a live page still use
+   `config/official_prices.yaml`; fetch or parse failures remain visible in
+   `source_health_*.json` and the PR body.
 6. **No dependency lock.** CI resolves `httpx` and `pyyaml` from unpinned ranges
    on every run. `uv.lock` is gitignored, so nothing pins a transitive version.
 7. **No watch-issue automation.** Held findings, unresolved evidence and scraper
@@ -713,13 +715,14 @@ additions-only rule; use the latest run artifacts for current source health.
 |----------|-----------|
 | Separate repo | Scraping, third-party-site adapters and guard policy belong to a generator, not to a consumer package. Tokdash ships only `pricing_db.json`. This repo commits no credentials; the publication token lives in CI secrets. |
 | Add new model entries only | Both `auto` and `propose` preserve every existing model entry and alias. The publisher independently compares the artifact against its pinned base before moving a branch, so neither a guard regression nor a modified artifact can reprice an existing model. |
-| Dual-source: OpenRouter + official sites | OpenRouter provides broad coverage in one call. Official adapters (Z.ai, MiniMax, DeepSeek, StepFun live; Moonshot, Xiaomi YAML fallback) provide authoritative first-party prices. Per field, the official value wins when it is larger or when the scrape never settled the field. Whether official should simply win whenever both sources have a number is an open policy question (issue #202); today's `max()` is the status quo, not a ratified rule. |
+| Dual-source: OpenRouter + official sites | OpenRouter provides broad coverage in one call. Live official adapters for Z.ai, MiniMax, DeepSeek, StepFun, Kimi and Xiaomi provide first-party prices. Per field, the official value wins when it is larger or when the scrape never settled the field. Whether official should simply win whenever both sources have a number is an open policy question (issue #202); today's `max()` is the status quo, not a ratified rule. |
 | Publish only against a pinned commit | The base is fetched and read before generation, and publication is refused once that commit is no longer the tip. A changed-files guard cannot catch this: the stale content sits inside the one file this bot is allowed to touch, so publishing it would silently revert a merged edit. |
 | Lease the force push against an observed commit | The bot branch is fetched and its SHA named in `--force-with-lease`, because a fresh CI clone has no tracking ref for it and git refuses the push otherwise with "stale info". |
 | Reject prices that cannot be prices | Negative, NaN, infinite and unparseable rates never become a number. Guards ask whether a field is missing, so a value that merely parses looks valid, and the renderer is the last gate before JSON. |
 | FX normalization | Official prices may be in CNY or USD. `config/fx_rates.yaml` holds the exchange rate; `policy.py` converts to USD before the max() comparison. Currently all tracked providers have USD pricing pages, but the machinery is ready for CNY sources. |
 | Family mapping | Official providers list fewer model IDs than OpenRouter (e.g. DeepSeek lists 2, OpenRouter lists 11). `config/official_family_map.yaml` maps versioned variants to their official pricing family via glob patterns. |
-| YAML fallback for SPA pages | Moonshot and Xiaomi official pages are JavaScript SPAs that don't serve pricing in initial HTML. Live adapters attempt to fetch them each run (will start working if SSR is added); YAML config provides the fallback. |
+| Provider pricing documents | Kimi's public `.md` endpoint exposes literal MDX table data, and Xiaomi's documentation index links its pay-as-you-go Markdown. No browser or JavaScript execution is needed. YAML covers models absent from those documents and remains the fallback on failure. |
+| One tariff per model | DeepSeek uses published peak rates, Kimi uses its default 5-minute cache-write tier, and Xiaomi uses overseas USD real-time API rates. Row and column labels keep discounted batch prices, RMB rates and longer cache tiers out of the default entry. Published zero prices are preserved; missing cache fields stay missing. |
 | Decimal arithmetic | OpenRouter returns per-token prices as strings (`"0.000005"`). Parsing with `Decimal` avoids floating-point drift during the `* 1,000,000` conversion to per-MTok. |
 | The gate needs no consumer opinion | A publication decision has to be derivable from the two databases. Tokdash's suite mixes "does this resolve" with "does this cost exactly 2.0" inside single tests, and multiplying prices to sort the failures tells you which tests are sensitive to numbers, never which failure was caused by what. So `structural_check` decides and the consumer suite advises; it was a gate first, and deleting a model through it read as a price expectation. |
 | Structured pytest results, never summary text | Reading `FAILED` lines made a fixture error, an aborted collection, and an empty check file all look like a passing validation. Verdicts come from the exit code and a JUnit record per test, with each required file accounted for, so "nobody asked the consumer" can never be reported as "the consumer agreed". |
