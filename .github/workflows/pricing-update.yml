@@ -1,0 +1,212 @@
+name: Pricing update
+
+# Generate, validate, publish, as three separately rerunnable jobs. Nothing is
+# pushed before the proposed database has been validated against tokdash's own
+# consumer checks, and nothing merges here.
+
+on:
+  schedule:
+    # Tue and Thu 06:00 UTC. Twice weekly keeps the review queue short without
+    # going stale; GitHub can delay scheduled runs, so manual dispatch is the
+    # real path, not a courtesy.
+    - cron: '0 6 * * 2,4'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Generate and validate, publish nothing
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pricing-update
+  cancel-in-progress: false
+
+env:
+  TOKDASH_REPO: JingbiaoMei/Tokdash
+  BOT_BRANCH: bot/pricing-db
+
+jobs:
+  generate:
+    name: Generate proposal
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install httpx pyyaml pytest
+
+      - name: Checkout tokdash at main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.TOKDASH_REPO }}
+          path: tokdash
+          persist-credentials: false
+
+      - name: Generate
+        # --dry-run: the branch move and PR belong to the publish job, after
+        # validation. Here we only produce the proposal and its evidence.
+        run: |
+          python -m pricing_updater --tokdash-repo tokdash auto \
+            --create-pr --dry-run --branch "$BOT_BRANCH" 2>&1 | tee generate.log
+
+      - name: Summarize
+        run: |
+          {
+            echo "## Run summary"
+            echo
+            tail -n 40 generate.log | sed 's/^/    /'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: proposal
+          path: |
+            output/proposals
+            output/raw
+          retention-days: 90
+
+  validate:
+    name: Validate against tokdash checks
+    needs: generate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: proposal
+          path: proposal
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Checkout tokdash at main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.TOKDASH_REPO }}
+          path: tokdash
+          persist-credentials: false
+
+      - name: Install tokdash
+        working-directory: tokdash
+        run: python -m pip install --quiet -e ".[dev]" || python -m pip install --quiet -e . pytest
+
+      - name: Apply the proposed database
+        run: |
+          if [ -f proposal/proposals/proposed_pricing_db.json ]; then
+            cp proposal/proposals/proposed_pricing_db.json \
+               tokdash/src/tokdash/pricing_db.json
+            echo "applied proposed pricing_db.json"
+          else
+            echo "no proposed database; nothing to validate"
+          fi
+
+      # The consumer contract lives in tokdash. Repricing legitimately moves
+      # fixed-price expectations, so a failure here means the PR must carry the
+      # reviewed test update, not that the bot should be ignored.
+      - name: Tokdash pricing checks
+        working-directory: tokdash
+        run: |
+          PYTHONPATH=src python -m pytest -q \
+            tests/test_pricing_db_contract.py \
+            tests/test_model_name_normalization.py \
+            tests/test_pricing_normalization.py
+
+  publish:
+    name: Publish the PR
+    needs: [generate, validate]
+    if: needs.validate.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Require a cross-repo token
+        env:
+          BOT_TOKEN: ${{ secrets.PRICING_BOT_TOKEN }}
+        run: |
+          if [ -z "$BOT_TOKEN" ]; then
+            echo "::error::PRICING_BOT_TOKEN is not set. The updater's own GITHUB_TOKEN cannot write to another repository, and a PR opened with it may also wait on a manual approval before tokdash CI runs. Configure a GitHub App installation token or a fine-grained PAT scoped to $TOKDASH_REPO with contents:write and pull-requests:write."
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: proposal
+          path: proposal
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install httpx pyyaml
+
+      - name: Checkout tokdash with write access
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.TOKDASH_REPO }}
+          path: tokdash
+          token: ${{ secrets.PRICING_BOT_TOKEN }}
+          persist-credentials: true
+
+      - name: Configure committer
+        working-directory: tokdash
+        run: |
+          git config user.name "pricing-bot"
+          git config user.email "pricing-bot@users.noreply.github.com"
+
+      # Re-runs refresh the one open PR on the bot branch instead of stacking a
+      # second one. A stale proposal can never be published: publish re-fetches
+      # the base and refuses a diff wider than the pricing DB.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.PRICING_BOT_TOKEN }}
+        run: |
+          python - <<'PY'
+          import pathlib, shutil, sys
+          sys.path.insert(0, "src")
+          from pricing_updater.github_pr import publish
+
+          body = pathlib.Path("proposal/proposals/pr_body.md")
+          proposed = pathlib.Path("proposal/proposals/proposed_pricing_db.json")
+          if not proposed.exists():
+              print("no proposed database; nothing to publish")
+              raise SystemExit(0)
+
+          result = publish(
+              tokdash_repo=pathlib.Path("tokdash"),
+              proposed_db_path=proposed,
+              body=body.read_text() if body.exists() else "See the run artifacts.",
+              title=f"Pricing DB update ({__import__('datetime').date.today().isoformat()})",
+              branch="bot/pricing-db",
+              base="main",
+              labels=["pricing", "automated"],
+          )
+          for warning in result.warnings:
+              print("warning:", warning)
+          if not result.ok:
+              print("::error::" + result.detail)
+              raise SystemExit(1)
+          print(result.action, result.pr_url or result.detail)
+          PY

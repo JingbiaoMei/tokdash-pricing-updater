@@ -10,8 +10,10 @@ from pathlib import Path
 import pytest
 
 
-# Use the saved OpenRouter snapshot for reproducible offline tests.
-SNAPSHOT_PATH = Path(__file__).parent.parent / "output" / "raw" / "openrouter_2026-03-15.json"
+# Tracked fixture, not the gitignored output/raw captures. A clean clone used to
+# skip these ten tests silently because the snapshot they needed was never
+# committed; CI looked green while asserting nothing.
+SNAPSHOT_PATH = Path(__file__).parent / "data" / "openrouter_fixture.json"
 
 
 @pytest.fixture(scope="module")

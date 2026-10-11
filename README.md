@@ -4,8 +4,8 @@ Layered pricing DB generator for [tokdash](https://github.com/JingbiaoMei/tokdas
 Scrapes model pricing from provider APIs, diffs against the current `pricing_db.json`,
 and produces human-reviewed updates.
 
-This is a **private companion repo**. Tokdash itself remains open-source and only
-consumes the generated JSON.
+This is the generator behind Tokdash's `src/tokdash/pricing_db.json`. Tokdash is a
+consumer: it ships the JSON and never the scraping logic.
 
 ## Why a separate repo?
 
@@ -190,25 +190,43 @@ cp output/proposals/proposed_pricing_db.json ../tokdash/src/tokdash/pricing_db.j
 
 ### `auto`
 
-CI / non-interactive mode. Automatically approves `safe_add` changes only.
-Price changes and stale models are included in the diff report but **not
-applied** — they require human review.
+CI mode. Scrapes, diffs, applies the guard policy in `config/anomaly_policy.yaml`,
+then publishes one PR. Everything the guards accept goes into the PR diff, new
+models and repricings alike, so reviewing the diff and merging is the whole job.
+Anything a guard distrusts is held out of the diff and named in the PR body.
 
 ```bash
-# Just generate the proposal.
+# Generate the proposal and its evidence, publish nothing.
 python -m pricing_updater --tokdash-repo ../tokdash auto
 
-# Also open a PR against tokdash (requires gh CLI authenticated).
-python -m pricing_updater --tokdash-repo ../tokdash auto --create-pr
-
-# Dry run: print git/gh commands without executing them.
+# Plan the publication (fetch, branch, diff scope) without pushing.
 python -m pricing_updater --tokdash-repo ../tokdash auto --create-pr --dry-run
+
+# Publish to the bot branch and open or refresh one PR.
+python -m pricing_updater --tokdash-repo ../tokdash auto --create-pr \
+  --branch bot/pricing-db --base main --labels pricing,automated
 ```
+
+Publication failure exits non-zero, so a run that could not open its PR does not
+look green. Artifacts land in `output/proposals/`: the proposed database, the diff
+report, `coverage_*.json`, `provenance_*.json` and the rendered `pr_body.md`.
 
 ## Config reference
 
 All config files live in `config/`. The scraper never modifies them — they are
 the human-maintained source of truth for everything outside the scraper path.
+
+### `anomaly_policy.yaml`
+
+Guard thresholds for unattended runs. See [Change classification](#change-classification).
+Every key is optional; the defaults in `guards.GuardPolicy` apply.
+
+```yaml
+max_changes_per_run: 25
+max_single_field_change_pct: 50
+min_openrouter_rows: 300
+hold_explicit_zero: true
+```
 
 ### `tracked_providers.yaml`
 
@@ -324,19 +342,42 @@ fields, so the fallback is rarely used.
 
 ## Change classification
 
-Every detected change is assigned one of three classifications that determine
-how it flows through the approval process:
+`diff.py` classifies each change for a human reader, and `guards.py` decides
+whether it may enter the PR diff. Two vocabularies, because they answer different
+questions.
 
 | Classification | Meaning | `propose` behavior | `auto` behavior |
 |---|---|---|---|
-| `safe_add` | New model from a tracked provider | Default accept (Y), human confirms | Auto-accepted |
-| `review_required` | Price changed on an existing model | Must explicitly accept | **Not applied** — flagged in PR body |
-| `manual_only` | Model absent for N consecutive scrapes | Shown, auto-skipped | **Not applied** — flagged in PR body |
+| `safe_add` | New model from a tracked provider | Default accept (Y), human confirms | Proposition candidate |
+| `review_required` | Price changed on an existing model | Must explicitly accept | In the diff, reviewed in the PR |
+| `manual_only` | Model absent for N consecutive scrapes | Shown, auto-skipped | Held; removals are never automatic |
 
-Deletions are **never automatic**. A model must be absent from all scraped
-sources for at least `min_consecutive_misses` (default 4) consecutive runs
-before it is even shown as stale, and even then the classification is
-`manual_only`.
+Guards override classification. A change is **proposable** unless a guard holds it,
+and the reason is always printed:
+
+| Guard | Config key | Holds when |
+|---|---|---|
+| Volume | `max_changes_per_run` | The run wants more source-derived changes than this. A mass move is a scraper signal |
+| Magnitude | `max_single_field_change_pct` | One field moves further than this |
+| Source floor | `min_openrouter_rows` | OpenRouter returns fewer rows than this; the run is fatal |
+| Explicit zero | `hold_explicit_zero` | A new entry prices input or output at zero |
+
+Alias retargeting is always held: it changes what a name means. Alias additions are
+exempt from the volume gate because they come from `config/aliases.yaml`, so their
+count says nothing about whether a scraper broke.
+
+Manual and derived entries are protected upstream and never appear as changes.
+
+## Coverage
+
+A run writes `output/proposals/coverage_<date>.json` with one row per
+`pricing_db.json` key and its state: `add_proposed`, `reprice_proposed`,
+`unchanged`, `held`, `protected_manual`, `protected_derived`, `unpriceable`, or
+`not_discovered`.
+
+That last state matters more than it looks. Official prices only overlay models
+OpenRouter discovered, so a key no source lists can never receive a repricing
+proposal, and nothing said so out loud before this file existed.
 
 ## Staleness gating
 
@@ -440,7 +481,7 @@ tokdash-pricing-updater/
 ├── pyproject.toml              # Package metadata (httpx, pyyaml)
 ├── README.md                   # This file
 ├── .gitignore
-├── .api_keys/                  # Gitignored; for gh tokens if needed
+├── .api_keys/                  # Gitignored local habits; use GH_TOKEN
 ├── config/
 │   ├── tracked_providers.yaml  # Which OpenRouter providers to scrape
 │   ├── aliases.yaml            # pricing_db.json alias section (manual)
@@ -466,25 +507,36 @@ tokdash-pricing-updater/
 │   │   ├── official_moonshot.py# Moonshot   (SPA — falls back to YAML)
 │   │   ├── official_xiaomi.py  # Xiaomi     (SPA — falls back to YAML)
 │   │   └── official_deepseek.py# DeepSeek   (api-docs.deepseek.com — live)
+│   ├── official_stepfun.py     # StepFun    (platform.stepfun.ai — live)
 │   ├── canonicalize.py         # Source IDs → tokdash pricing_db keys
 │   ├── policy.py               # Official overlay, FX, cache fallback, rounding
 │   ├── render_tokdash_db.py    # Merge all layers → pricing_db.json
-│   ├── diff.py                 # Diff engine, change classification
+│   ├── diff.py                 # Diff engine, classification, PR body
+│   ├── guards.py               # Proposable vs held, threshold policy
+│   ├── coverage.py             # Which keys the bot can actually move
 │   ├── approval.py             # Interactive + auto review
-│   └── github_pr.py            # PR creation via gh CLI
+│   └── github_pr.py            # Publish to one bot branch, open or refresh one PR
 ├── state/
 │   └── last_seen.json          # Gitignored; staleness tracking across runs
 ├── output/                     # Gitignored; all generated artifacts
 │   ├── raw/                    # Raw API responses per scrape run
 │   ├── canonical/              # Canonicalized snapshots per run
-│   └── proposals/              # Diff reports + proposed pricing_db.json
+│   └── proposals/              # Proposed DB, diff report, coverage, provenance, pr_body
+│                               # (override with PRICING_UPDATER_OUTPUT_DIR)
 └── tests/
     ├── __init__.py
     ├── test_canonicalize.py
     ├── test_diff.py
     ├── test_model_coverage.py  # Fixture tests for named models
     ├── test_policy.py
-    └── test_render.py
+    ├── test_render.py
+    ├── test_guards.py
+    ├── test_coverage.py
+    ├── test_publish.py
+    ├── test_price_integrity.py
+    ├── test_auto_pipeline.py
+    └── data/
+        └── openrouter_fixture.json   # tracked fixture; no network, no skips
 ```
 
 ## Testing
@@ -500,45 +552,27 @@ python -m pytest tests/test_pricing_db_contract.py -v
 
 ## CI integration (GitHub Actions)
 
-Example workflow for the updater's own repo, running weekly:
+Two workflows live in `.github/workflows/`:
 
-```yaml
-name: Pricing Update Check
-on:
-  schedule:
-    - cron: '0 8 * * 1'   # Every Monday 08:00 UTC
-  workflow_dispatch:
+- `ci.yml` runs the suite on 3.10 and 3.12 and **fails on any skipped test**, because
+  a clean clone used to skip ten of them silently when their fixture lived in
+  gitignored `output/`.
+- `pricing-update.yml` runs Tuesday and Thursday, plus on demand, as three jobs:
+  **generate**, **validate** (tokdash's own pricing checks run against the proposed
+  database before anything is pushed), and **publish**.
 
-jobs:
-  check-pricing:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: JingbiaoMei/tokdash
-          path: tokdash
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - run: pip install -e .
-
-      - name: Scrape, diff, and open PR if safe_add changes found
-        env:
-          GH_TOKEN: ${{ secrets.TOKDASH_PR_TOKEN }}
-        run: python -m pricing_updater --tokdash-repo tokdash auto --create-pr
-```
-
-The `auto --create-pr` command only creates a PR when there are approved
-`safe_add` changes. If there are none, it exits cleanly.
+Publishing needs a credential that is authorized on the tokdash repo. The updater's
+own `GITHUB_TOKEN` cannot write to another repository, so set `PRICING_BOT_TOKEN`
+to a GitHub App installation token or a fine-grained PAT with `contents: write` and
+`pull-requests: write` on `JingbiaoMei/Tokdash`. Scheduled runs only execute from the
+default branch, can be delayed or coalesced, and are disabled after 60 days of repo
+inactivity, which is why `workflow_dispatch` is a first-class path.
 
 ## Design decisions
 
 | Decision | Rationale |
 |----------|-----------|
-| Separate private repo | Keeps scraping logic and API keys out of the open-source tokdash repo. Tokdash only consumes `pricing_db.json`. |
+| Separate repo | Scraping, third-party-site adapters and guard policy belong to a generator, not to a consumer package. Tokdash ships only `pricing_db.json`. This repo commits no credentials; the publication token lives in CI secrets. |
 | Dual-source: OpenRouter + official sites | OpenRouter provides broad coverage (124 models, 8 providers) in one call. Official adapters (Z.ai, MiniMax, DeepSeek live; Moonshot, Xiaomi YAML fallback) provide authoritative first-party prices. `max(openrouter, official)` per field ensures conservative cost tracking. |
 | FX normalization | Official prices may be in CNY or USD. `config/fx_rates.yaml` holds the exchange rate; `policy.py` converts to USD before the max() comparison. Currently all tracked providers have USD pricing pages, but the machinery is ready for CNY sources. |
 | Family mapping | Official providers list fewer model IDs than OpenRouter (e.g. DeepSeek lists 2, OpenRouter lists 11). `config/official_family_map.yaml` maps versioned variants to their official pricing family via glob patterns. |

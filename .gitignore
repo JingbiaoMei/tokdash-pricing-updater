@@ -5,5 +5,11 @@ dist/
 build/
 .api_keys/
 output/
-state/last_seen.json
+state/
+.pytest_cache/
+.venv/
+venv/
+.uv-cache/
+uv.lock
+.python-version
 .env
