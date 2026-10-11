@@ -217,9 +217,10 @@ look green. `--dry-run` changes nothing at all, including the checked-out branch
 
 Artifacts land in `output/proposals/`: the proposed database, the diff report,
 `coverage_*.json`, `provenance_*.json`, `source_health_*.json` (which official
-adapters answered and which fell back to YAML), `base_sha.txt` (the commit the
-proposal was computed against, which publication refuses to move away from) and
-the rendered `pr_body.md`.
+adapters answered and which fell back to YAML), `base_sha.txt` and
+`publish_plan.json` (the commit the proposal was computed against, plus its title
+and draft state, which publication refuses to move away from or reinvent) and the
+rendered `pr_body.md`.
 
 ## Config reference
 

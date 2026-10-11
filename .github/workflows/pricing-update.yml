@@ -240,24 +240,29 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           python - <<'PY'
-          import os, pathlib, sys
+          import json, os, pathlib
           from pricing_updater.github_pr import publish
 
-          body = pathlib.Path("proposal/proposals/pr_body.md")
           proposed = pathlib.Path("proposal/proposals/proposed_pricing_db.json")
           if not proposed.exists():
               print("no proposed database; nothing to publish")
               raise SystemExit(0)
 
+          # Title and draft state come from the run that built the diff, so a PR
+          # cannot disagree with the evidence inside it.
+          plan = json.loads(pathlib.Path("proposal/proposals/publish_plan.json").read_text())
+          body = pathlib.Path("proposal/proposals/pr_body.md")
+
           result = publish(
               tokdash_repo=pathlib.Path("tokdash"),
               proposed_db_path=proposed,
               body=body.read_text() if body.exists() else "See the run artifacts.",
-              title=f"Pricing DB update ({__import__('datetime').date.today().isoformat()})",
+              title=plan["title"],
               branch="bot/pricing-db",
               base="main",
               labels=["pricing", "automated"],
-              generated_at_sha=os.environ["BASE_SHA"],
+              generated_at_sha=os.environ["BASE_SHA"] or plan["base_sha"],
+              draft=bool(plan.get("draft")),
               dry_run=os.environ.get("DRY_RUN") == "true",
           )
           for warning in result.warnings:

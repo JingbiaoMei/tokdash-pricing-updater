@@ -426,8 +426,8 @@ def cmd_auto(args):
             print(f"ERROR: {exc}", file=sys.stderr)
             sys.exit(1)
         print(f"Base: {args.base} at {base_sha[:7]}")
-        # The CI jobs pass this between them; publishing against anything else is
-        # refused, so a stale proposal cannot overwrite a newer edit.
+        # Read back by the validate and publish jobs, which check this commit out
+        # rather than whatever the branch happens to point at by then.
         base_path = output_dir / "proposals" / "base_sha.txt"
         base_path.parent.mkdir(parents=True, exist_ok=True)
         base_path.write_text(base_sha + "\n")
@@ -558,11 +558,22 @@ def cmd_auto(args):
     body_path.write_text(body + "\n")
     print(f"PR body: {body_path}")
 
+    title = f"Pricing DB update ({today})"
+
+    # The publish job runs from the artifacts, not from this process, so what it
+    # decides here has to survive the handoff. A title or draft flag rebuilt on
+    # the other side is a title or draft flag that disagrees with the run that
+    # produced the diff.
+    plan_path = output_dir / "proposals" / "publish_plan.json"
+    plan_path.write_text(json.dumps(
+        {"base_sha": base_sha, "title": title, "draft": draft}, indent=2,
+    ) + "\n")
+
     result = publish(
         tokdash_repo=repo,
         proposed_db_path=out_path,
         body=body,
-        title=f"Pricing DB update ({today})",
+        title=title,
         branch=args.branch,
         base=args.base,
         labels=[s for s in args.labels.split(",") if s] if args.labels else None,

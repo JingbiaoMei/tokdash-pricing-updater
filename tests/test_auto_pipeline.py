@@ -241,6 +241,22 @@ def test_the_proposal_is_pinned_to_the_base_it_was_generated_against(workspace, 
     assert recorder[0]["generated_at_sha"]
 
 
+def test_the_publish_decisions_survive_the_artifact_handoff(workspace, recorder):
+    """CI publishes from artifacts, so title and draft state have to be in them.
+
+    A publish job that rebuilds them invents a PR that disagrees with the run
+    that produced the diff inside it.
+    """
+    cli.cmd_auto(_args(workspace))
+
+    plan = json.loads(
+        (cli._output_dir() / "proposals" / "publish_plan.json").read_text()
+    )
+    assert plan["base_sha"] == recorder[0]["generated_at_sha"]
+    assert plan["title"] == recorder[0]["title"]
+    assert plan["draft"] == recorder[0]["draft"]
+
+
 def test_a_run_where_most_changes_look_wrong_opens_a_draft(workspace, recorder, monkeypatch):
     """Several models moving 60% at once is a scraper signal, not a pricing day."""
     rows = [
