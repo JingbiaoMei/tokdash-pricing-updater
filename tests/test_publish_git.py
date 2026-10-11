@@ -27,6 +27,19 @@ BOT = "bot/pricing-db"
 _OPEN_PR = ""
 
 
+@pytest.fixture(autouse=True)
+def _no_open_pr():
+    """gh reports no open PR unless a test says otherwise.
+
+    The shared global is set by the tests that simulate a rerun; without this,
+    whichever test ran last decides whether the next one believes a PR is open.
+    """
+    global _OPEN_PR
+    _OPEN_PR = ""
+    yield
+    _OPEN_PR = ""
+
+
 def git(repo, *args, check=True):
     return subprocess.run(
         ["git", *args], cwd=str(repo), text=True, capture_output=True,
@@ -88,14 +101,28 @@ def push_bot_branch(bare, workdir_parent, data):
 
 
 def test_dry_run_leaves_the_checked_out_branch_alone(remote, tmp_path):
+    """A dry run cannot move HEAD, so the branch has to be able to move.
+
+    On a bot branch cut from main's own tip, `git checkout -B bot origin/main` is
+    a no-op and this test passes with or without the bug. The divergent commit is
+    what makes the assertion mean something.
+    """
     work = tmp_path / "work"
     git(tmp_path, "clone", str(remote), str(work))
     git(work, "config", "user.name", "Bot")
     git(work, "config", "user.email", "bot@example.invalid")
     git(work, "checkout", "-B", BOT)
-    head_before = git(work, "rev-parse", "HEAD").stdout.strip()
+
+    stale = copy.deepcopy(BASE)
+    stale["models"]["alpha"]["input"] = 9.9
+    stale["models"]["left-over"] = {"provider": "openai", "input": 1, "output": 1,
+                                     "cache_read": 0.1, "cache_write": 1}
+    commit_db(work, stale, "an earlier proposal this run must not touch")
 
     tip = git(work, "rev-parse", "origin/main").stdout.strip()
+    head_before = git(work, "rev-parse", "HEAD").stdout.strip()
+    assert head_before != tip, "the bot branch must diverge from main to test anything"
+
     proposal = tmp_path / "proposal.json"
     newer = copy.deepcopy(BASE)
     newer["models"]["alpha"]["input"] = 1.2
@@ -106,7 +133,7 @@ def test_dry_run_leaves_the_checked_out_branch_alone(remote, tmp_path):
 
     assert (result.ok, result.action) == (True, "dry_run")
     assert git(work, "rev-parse", "HEAD").stdout.strip() == head_before
-    assert json.loads((work / TARGET_REL_PATH).read_text()) == BASE
+    assert json.loads((work / TARGET_REL_PATH).read_text()) == stale
 
 
 def test_refreshing_an_existing_bot_branch_works_on_a_fresh_runner(remote, tmp_path):
@@ -232,3 +259,30 @@ def test_a_second_run_refreshes_the_same_branch(remote, tmp_path):
         git(remote, "show", f"refs/heads/{BOT}:{TARGET_REL_PATH}").stdout
     )
     assert published["models"]["alpha"]["input"] == 1.4
+
+
+def test_a_refresh_updates_the_branch_content_on_the_remote(remote, tmp_path):
+    """The published commit is the proposal, not an earlier one on that branch."""
+    older = copy.deepcopy(BASE)
+    older["models"]["alpha"]["input"] = 1.1
+    push_bot_branch(remote, tmp_path, older)
+
+    work = tmp_path / "work"
+    git(tmp_path, "clone", "--single-branch", "--branch", "main", str(remote), str(work))
+    git(work, "config", "user.name", "Bot")
+    git(work, "config", "user.email", "bot@example.invalid")
+    tip = git(work, "rev-parse", "origin/main").stdout.strip()
+
+    proposed = copy.deepcopy(BASE)
+    proposed["models"]["alpha"]["input"] = 1.75
+    proposal = tmp_path / "proposal.json"
+    proposal.write_text(json.dumps(proposed))
+
+    result = publish(work, proposal, "body", "title",
+                     generated_at_sha=tip, run=stubbed_github)
+
+    assert (result.ok, result.action) == (True, "opened"), result.detail
+    published = json.loads(
+        git(remote, "show", f"refs/heads/{BOT}:{TARGET_REL_PATH}").stdout
+    )
+    assert published["models"]["alpha"]["input"] == 1.75
