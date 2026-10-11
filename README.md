@@ -662,7 +662,9 @@ against the real tokdash checkout.
 2. **The bot cannot update tokdash's own price expectations.** A repricing that
    moves a number a consumer test pins now reaches a draft PR instead of being
    blocked, but the test edit is still a human's: the bot publishes one file,
-   `pricing_db.json`, and refuses a wider diff by design.
+   `pricing_db.json`, and refuses a wider diff by design. Retiring a model is
+   manual for the same reason -- the gate refuses a proposal that drops one, and
+   the guards hold staleness findings rather than acting on them.
 3. **Source precedence is undecided (issue #202, D1).** The overlay takes the
    larger of OpenRouter and the official page per field, so a model can end up
    with fields from both sources and an aggregator price can beat the provider's
