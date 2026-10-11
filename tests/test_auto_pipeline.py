@@ -136,12 +136,13 @@ def recorder(monkeypatch):
     return calls
 
 
-def test_repricing_and_additions_reach_the_diff(workspace, recorder, capsys):
+def test_only_new_models_reach_the_diff(workspace, recorder, capsys):
+    current = json.loads((workspace / github_pr.TARGET_REL_PATH).read_text())
     cli.cmd_auto(_args(workspace))
 
     kwargs = recorder[0]
     body = kwargs["body"]
-    assert "### Repricing (1)" in body
+    assert "### Repricing" not in body
     assert "### Additions (1)" in body
     assert "unit-test-alpha" in body
     assert "unit-test-new" in body
@@ -149,14 +150,16 @@ def test_repricing_and_additions_reach_the_diff(workspace, recorder, capsys):
     proposed = json.loads(
         (cli._output_dir() / "proposals/proposed_pricing_db.json").read_text()
     )
-    assert proposed["models"]["unit-test-alpha"]["input"] == 1.2
+    for model_id, entry in current["models"].items():
+        assert proposed["models"][model_id] == entry
+    assert proposed["aliases"] == current["aliases"]
     assert "unit-test-new" in proposed["models"]
     # Held changes must not be applied.
     assert "unit-test-free" not in proposed["models"]
     assert proposed["models"]["unit-test-gamma"]["input"] == 1.0
 
     out = capsys.readouterr().out
-    assert "2 proposable, 2 held" in out
+    assert "1 proposable, 3 held" in out
 
 
 def test_reviewer_evidence_artifacts_are_written(workspace, recorder):
@@ -167,17 +170,41 @@ def test_reviewer_evidence_artifacts_are_written(workspace, recorder):
     coverage = json.loads((out / f"coverage_{today}.json").read_text())
     provenance = json.loads((out / f"provenance_{today}.json").read_text())
 
-    assert coverage["summary"]["held"] == 2
+    assert coverage["summary"]["held"] == 3
     assert coverage["models"]["unit-test-free"]["state"] == "held"
     assert "max_single_field_change_pct" in coverage["models"]["unit-test-gamma"]["detail"]
     assert provenance["unit-test-new"]["field_sources"]["input"] == "openrouter"
+
+
+def test_interactive_proposals_also_preserve_existing_prices(workspace, monkeypatch):
+    from pricing_updater import approval
+
+    before = json.loads((workspace / github_pr.TARGET_REL_PATH).read_text())
+    reviewed = []
+
+    def accept_additions(changes):
+        reviewed.extend(changes)
+        return changes
+
+    monkeypatch.setattr(approval, "interactive_review", accept_additions)
+    cli.cmd_propose(_args(workspace))
+    proposed = json.loads(
+        (cli._output_dir() / "proposals/proposed_pricing_db.json").read_text()
+    )
+
+    assert [change.change_type for change in reviewed] == ["new"]
+    assert "unit-test-new" in proposed["models"]
+    assert proposed["aliases"] == before["aliases"]
+    for key, entry in before["models"].items():
+        assert proposed["models"][key] == entry
 
 
 def test_held_changes_are_named_in_the_body(workspace, recorder):
     cli.cmd_auto(_args(workspace))
 
     body = recorder[0]["body"]
-    assert "Held back, not in this diff (2)" in body
+    assert "Held back, not in this diff (3)" in body
+    assert "additions-only" in body
     assert "max_single_field_change_pct" in body
     assert "at zero" in body
 
@@ -284,8 +311,8 @@ def test_the_publish_decisions_survive_the_artifact_handoff(workspace, recorder)
     assert plan["draft"] == recorder[0]["draft"]
 
 
-def test_a_run_where_most_changes_look_wrong_opens_a_draft(workspace, recorder, monkeypatch):
-    """Several models moving 60% at once is a scraper signal, not a pricing day."""
+def test_held_repricing_does_not_draft_valid_new_additions(workspace, recorder, monkeypatch):
+    """Existing prices are out of scope, so their changes cannot draft new models."""
     rows = [
         # Two existing models moving 80% each, which no provider does quietly.
         {"id": "openai/unit-test-alpha", "pricing": {"prompt": "0.0000002",
@@ -300,7 +327,28 @@ def test_a_run_where_most_changes_look_wrong_opens_a_draft(workspace, recorder, 
 
     cli.cmd_auto(_args(workspace))
 
-    assert recorder[0]["draft"] is True
+    assert recorder[0]["draft"] is False
+
+
+def test_the_assembled_proposal_cannot_amend_existing_prices(
+    workspace, recorder, monkeypatch, capsys
+):
+    real = cli._apply_approved
+
+    def approved_but_repricing(current_db, proposed_db, approved):
+        final = real(current_db, proposed_db, approved)
+        final["models"]["unit-test-alpha"]["input"] = 1.2
+        return final
+
+    monkeypatch.setattr(cli, "_apply_approved", approved_but_repricing)
+
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_auto(_args(workspace))
+
+    assert exc.value.code == 1
+    assert recorder == []
+    assert "cannot modify an existing entry" in capsys.readouterr().err
+    assert not (cli._output_dir() / "proposals/proposed_pricing_db.json").exists()
 
 
 def test_one_ordinary_price_move_does_not_draft_the_whole_pr(workspace, recorder):

@@ -142,9 +142,8 @@ def classify(
 ) -> list[Decision]:
     """Decide which computed changes may enter the PR diff.
 
-    Repricing an existing model is proposable: a human reviews it in the PR,
-    which is the whole point of the bot. What stays held is anything a guard
-    distrusts, and deletions, which are never automatic.
+    Automation only adds new model entries. Existing prices, aliases and
+    removals are held for manual maintenance, even when the evidence is sound.
     """
     decisions: list[Decision] = []
 
@@ -152,9 +151,7 @@ def classify(
         reasons = _hold_reasons(change, policy)
         decisions.append(Decision(change=change, proposable=not reasons, reasons=reasons))
 
-    # Only source-derived changes count toward the volume gate. Alias additions
-    # come from config/aliases.yaml, so their number says nothing about whether
-    # a scraper broke.
+    # Held repricings must not consume the allowance for new model additions.
     volumetric = [
         d for d in decisions
         if d.proposable and d.change.change_type in ("new", "price_change", "stale")
@@ -184,6 +181,10 @@ def _hold_reasons(change: PricingChange, policy: GuardPolicy) -> list[str]:
         reasons.append("alias retargeting changes model identity, needs a human")
         return reasons
 
+    if change.change_type == "alias_add":
+        reasons.append("additions-only automation: aliases require a manual update")
+        return reasons
+
     entry = change.new_entry or {}
 
     if change.change_type == "new" and policy.hold_explicit_zero:
@@ -194,6 +195,7 @@ def _hold_reasons(change: PricingChange, policy: GuardPolicy) -> list[str]:
             )
 
     if change.change_type == "price_change":
+        reasons.append("additions-only automation: existing model prices require a manual update")
         for fld in change.fields_changed:
             old_v = _as_float((change.old_entry or {}).get(fld))
             new_v = _as_float(entry.get(fld))
@@ -226,21 +228,11 @@ def _as_float(value) -> float | None:
 
 # Guard reasons that say something about the run rather than one price.
 RUN_LEVEL_MARKERS = ("max_changes_per_run", "min_openrouter_rows")
-# The guard that fires when a source's numbers move further than a price should.
-MAGNITUDE_MARKER = "max_single_field_change_pct"
-
-
 def should_draft(decisions: list[Decision]) -> bool:
-    """True when the run as a whole looks suspect, not when one price looks odd.
-
-    One new entry at zero, or one field that moved a long way, is an ordinary
-    review question and belongs in an ordinary PR. A volume breach, a thin source
-    response, or a run where most of the computed changes tripped the magnitude
-    guard means the source or a scraper changed shape; that PR should not sit
-    there looking merge-ready, so it opens as a draft.
-    """
-    held = [d for d in decisions if not d.proposable]
-    if not held or not decisions:
+    """Draft signals concern additions, never repricings excluded by policy."""
+    additions = [d for d in decisions if d.change.change_type == "new"]
+    held = [d for d in additions if not d.proposable]
+    if not held:
         return False
 
     if any(
@@ -249,8 +241,7 @@ def should_draft(decisions: list[Decision]) -> bool:
     ):
         return True
 
-    magnitude = [d for d in held if any(MAGNITUDE_MARKER in r for r in d.reasons)]
-    return len(magnitude) >= max(2, len(decisions) // 2)
+    return False
 
 
 def proposable_changes(decisions: list[Decision]) -> list[PricingChange]:

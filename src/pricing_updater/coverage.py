@@ -1,10 +1,7 @@
-"""Coverage reporting: which pricing_db keys the bot can actually move.
+"""Report new model additions, held findings and preserved existing entries.
 
-Official prices only overlay models that OpenRouter discovered, and manual and
-derived entries are protected from the diff. Both are correct design choices,
-but together they mean a large slice of the database can never receive a
-repricing proposal, and nothing said so out loud. This module makes the split
-machine-readable so it can be watched run over run.
+Discovery and source-health evidence remain useful for manual maintenance, but
+only new model entries count as movable by the additions-only bot.
 """
 
 from __future__ import annotations
@@ -70,11 +67,15 @@ def build_coverage(
         summary[row["state"]] = summary.get(row["state"], 0) + 1
     summary["total_keys"] = len(rows)
 
-    movable = summary.get("add_proposed", 0) + summary.get("reprice_proposed", 0) + \
-        summary.get("unchanged", 0)
+    movable = sum(1 for key, row in rows.items()
+                  if key not in current_keys and row["state"] == "add_proposed")
     summary["movable_by_bot"] = movable
-    summary["frozen"] = summary.get("not_discovered", 0) + summary.get("protected_manual", 0) + \
-        summary.get("protected_derived", 0) + summary.get("unpriceable", 0)
+    summary["existing_preserved"] = len(current_keys)
+    summary["frozen"] = sum(
+        1 for key, row in rows.items()
+        if key in current_keys or row["state"] in
+        {"protected_manual", "protected_derived", "unpriceable", "not_discovered"}
+    )
 
     return {"summary": summary, "models": rows}
 
@@ -89,11 +90,10 @@ def summarize(coverage: dict) -> str:
     """One line for the console and the run summary."""
     s = coverage["summary"]
     return (
-        f"coverage: {s.get('total_keys', 0)} keys, {s.get('movable_by_bot', 0)} movable by bot, "
-        f"{s.get('frozen', 0)} frozen "
-        f"(not_discovered={s.get('not_discovered', 0)}, "
-        f"protected={s.get('protected_manual', 0) + s.get('protected_derived', 0)}, "
-        f"unpriceable={s.get('unpriceable', 0)})"
+        f"coverage: {s.get('total_keys', 0)} keys, "
+        f"{s.get('movable_by_bot', 0)} new model additions, "
+        f"{s.get('existing_preserved', 0)} existing models preserved, "
+        f"{s.get('held', 0)} held"
     )
 
 

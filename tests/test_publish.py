@@ -26,6 +26,9 @@ SHA = "a" * 40
 NEWER = "c" * 40
 BOT_REF = f"refs/remotes/origin/{BOT_BRANCH}"
 MAIN_REF = "refs/remotes/origin/main"
+ENTRY = {"provider": "openai", "input": 1, "output": 2,
+         "cache_read": 0.5, "cache_write": 1, "unit": "per_million_tokens"}
+BASE = {"version": "2.0.1", "aliases": {}, "models": {"existing": ENTRY}}
 
 
 @dataclass
@@ -41,6 +44,7 @@ class Runner:
     def __init__(self, responses=None, refs=None, failures=()):
         self.calls: list[str] = []
         self.responses = {"remote get-url": "git@github.com:JingbiaoMei/Tokdash.git\n",
+                          f"show {SHA}:{DB_REL}": json.dumps(BASE),
                           **(responses or {})}
         self.refs = {MAIN_REF: SHA} if refs is None else dict(refs)
         self.failures = tuple(failures)
@@ -81,14 +85,15 @@ class Runner:
 def repo(tmp_path: Path) -> Path:
     target = tmp_path / "checkout" / TARGET_REL_PATH
     target.parent.mkdir(parents=True)
-    target.write_text('{"version": "2.0.1"}')
+    target.write_text(json.dumps(BASE))
     return tmp_path / "checkout"
 
 
 @pytest.fixture
 def proposed(tmp_path: Path) -> Path:
     path = tmp_path / "proposed_pricing_db.json"
-    path.write_text(json.dumps({"version": "2.0.2", "models": {"a": {"input": 1}}}))
+    path.write_text(json.dumps({"version": "2.0.2", "aliases": {},
+                               "models": {"existing": ENTRY, "a": ENTRY}}))
     return path
 
 
@@ -278,6 +283,19 @@ def test_a_malformed_proposal_fails_before_any_git_call(tmp_path, repo):
     assert result.ok is False
     assert "models" in result.detail
     assert run.calls == []
+
+
+def test_an_artifact_cannot_amend_an_existing_entry(repo, proposed):
+    data = json.loads(proposed.read_text())
+    data["models"]["existing"]["input"] = 1.2
+    proposed.write_text(json.dumps(data))
+    run = Runner()
+
+    result = _pub(repo, proposed, run)
+
+    assert not result.ok
+    assert "cannot modify an existing entry" in result.detail
+    assert not run.wrote_anything
 
 
 def test_push_failure_is_a_failed_run(repo, proposed):

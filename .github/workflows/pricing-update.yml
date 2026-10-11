@@ -1,16 +1,13 @@
-name: Pricing update
+name: Add new model prices
 
 # Generate, validate, publish, as three separately rerunnable jobs. Nothing is
 # pushed before the proposed database has been validated against tokdash's own
 # consumer checks, and nothing merges here.
 
 on:
-  # Kept off, deliberately, until two things are settled: the guard thresholds,
-  # which currently hold every computed change so a scheduled run is green and
-  # publishes nothing, and the source-precedence question in issue #202. Until
-  # then an unattended run cannot produce a mergeable proposal, and a schedule that
-  # cannot do its job is noise on a Tuesday morning. Un-comment to enable; the
-  # dispatch path below is the one to use meanwhile. Scheduled runs only execute
+  # Enable after a successful manual pilot and PRICING_BOT_TOKEN setup. The bot
+  # only adds new model entries; existing prices and aliases are preserved.
+  # Scheduled runs only execute
   # from the default branch, can be delayed or coalesced, and stop after 60 days
   # of repo inactivity.
   #
@@ -21,7 +18,7 @@ on:
       dry_run:
         description: Generate and validate, publish nothing
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
@@ -174,6 +171,7 @@ jobs:
             python -m pricing_updater.structural_check \
               --proposed proposal/proposals/proposed_pricing_db.json \
               --tokdash-repo tokdash \
+              --additions-only \
               --json-out validation/structural_check.json
           else
             echo "Nothing was proposed, so there is nothing to gate."

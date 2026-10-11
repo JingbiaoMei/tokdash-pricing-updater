@@ -188,6 +188,21 @@ def publish(
             ),
         )
 
+    # Enforce the bot's additions-only contract on the actual artifact, rather
+    # than trusting the generator or a previously completed validation job.
+    from .structural_check import check
+
+    try:
+        current_db = read_db_at(tokdash_repo, remote_base, run)
+    except RuntimeError as exc:
+        return PublishResult(ok=False, action="failed", branch=branch, detail=str(exc))
+    findings = check(proposal, current_db, additions_only=True)
+    if findings:
+        return PublishResult(
+            ok=False, action="failed", branch=branch,
+            detail="refusing an invalid additions-only proposal: " + "; ".join(findings[:8]),
+        )
+
     # Checked before the first write and before the branch move: a dry run that
     # resets HEAD is not a dry run.
     remote_branch = fetch_ref(tokdash_repo, branch, run)

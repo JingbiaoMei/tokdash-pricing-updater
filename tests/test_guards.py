@@ -7,6 +7,7 @@ from pricing_updater.guards import (
     classify,
     held_changes,
     proposable_changes,
+    should_draft,
 )
 
 
@@ -41,24 +42,46 @@ def _repriced(model_id, field, old, new):
     )
 
 
-def test_repricing_is_proposable():
-    """A provider reprice belongs in the diff for a human to review."""
+def test_repricing_is_always_held():
+    """Even a small, well-sourced change cannot amend an existing price."""
     decisions = classify([_repriced("gpt-5.4", "input", 2.5, 3.0)], _policy())
 
-    assert len(proposable_changes(decisions)) == 1
+    assert proposable_changes(decisions) == []
+    assert "additions-only" in decisions[0].reasons[0]
 
 
 def test_large_single_move_is_held():
     decisions = classify([_repriced("gpt-5.4", "input", 2.5, 10.0)], _policy())
 
     assert proposable_changes(decisions) == []
-    assert "max_single_field_change_pct" in decisions[0].reasons[0]
+    assert any("max_single_field_change_pct" in reason for reason in decisions[0].reasons)
 
 
 def test_price_dropping_to_zero_is_held():
     decisions = classify([_repriced("gpt-5.4", "output", 15.0, 0)], _policy())
 
-    assert "would drop to 0.0" in decisions[0].reasons[0]
+    assert any("would drop to 0.0" in reason for reason in decisions[0].reasons)
+
+
+def test_held_repricing_does_not_block_or_draft_new_additions():
+    changes = [_repriced(f"old-{i}", "input", 1.0, 10.0) for i in range(100)]
+    changes.append(_new("new-model", 1.0, 2.0))
+
+    decisions = classify(changes, _policy(max_changes_per_run=1))
+
+    assert [change.model_id for change in proposable_changes(decisions)] == ["new-model"]
+    assert len(held_changes(decisions)) == 100
+    assert not should_draft(decisions)
+
+
+def test_new_aliases_also_require_manual_maintenance():
+    change = PricingChange("new-alias", "alias_add", "safe_add",
+                           new_entry={"target": "new-model"})
+
+    decisions = classify([change], _policy())
+
+    assert not proposable_changes(decisions)
+    assert "aliases require a manual update" in decisions[0].reasons[0]
 
 
 def test_new_entry_at_zero_is_held():

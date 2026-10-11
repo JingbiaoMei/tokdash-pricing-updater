@@ -20,7 +20,7 @@ from pricing_updater.github_pr import TARGET_REL_PATH, publish
 
 BASE = {"version": "2.0.1", "aliases": {}, "models": {
     "alpha": {"provider": "openai", "input": 1, "output": 2,
-               "cache_read": 0.5, "cache_write": 1},
+               "cache_read": 0.5, "cache_write": 1, "unit": "per_million_tokens"},
 }}
 BOT = "bot/pricing-db"
 # Swapped by tests that want gh to report an already-open PR for the bot branch.
@@ -70,6 +70,12 @@ def commit_db(repo, data, message):
     write_db(repo, data)
     git(repo, "add", str(TARGET_REL_PATH))
     git(repo, "commit", "-qm", message)
+
+
+def add_model(data, price):
+    result = copy.deepcopy(data)
+    result["models"]["new-model"] = dict(BASE["models"]["alpha"], input=price)
+    return result
 
 
 @pytest.fixture
@@ -124,8 +130,7 @@ def test_dry_run_leaves_the_checked_out_branch_alone(remote, tmp_path):
     assert head_before != tip, "the bot branch must diverge from main to test anything"
 
     proposal = tmp_path / "proposal.json"
-    newer = copy.deepcopy(BASE)
-    newer["models"]["alpha"]["input"] = 1.2
+    newer = add_model(BASE, 1.2)
     proposal.write_text(json.dumps(newer))
 
     result = publish(work, proposal, "body", "title", dry_run=True,
@@ -149,7 +154,8 @@ def test_refreshing_an_existing_bot_branch_works_on_a_fresh_runner(remote, tmp_p
     # A later commit on main that the proposal must not overwrite.
     later = copy.deepcopy(BASE)
     later["models"]["human-added"] = {"provider": "openai", "input": 3, "output": 6,
-                                       "cache_read": 0.3, "cache_write": 3}
+                                       "cache_read": 0.3, "cache_write": 3,
+                                       "unit": "per_million_tokens"}
     seed = tmp_path / "seed"
     commit_db(seed, later, "main moves on")
     git(seed, "push", "origin", "main")
@@ -161,8 +167,7 @@ def test_refreshing_an_existing_bot_branch_works_on_a_fresh_runner(remote, tmp_p
     tip = git(single, "rev-parse", "origin/main").stdout.strip()
 
     proposal = tmp_path / "proposal.json"
-    proposed = copy.deepcopy(later)
-    proposed["models"]["alpha"]["input"] = 1.2
+    proposed = add_model(later, 1.2)
     proposal.write_text(json.dumps(proposed))
 
     result = publish(single, proposal, "body", "title",
@@ -172,7 +177,8 @@ def test_refreshing_an_existing_bot_branch_works_on_a_fresh_runner(remote, tmp_p
     published = json.loads(
         git(remote, "show", f"refs/heads/{BOT}:{TARGET_REL_PATH}").stdout
     )
-    assert published["models"]["alpha"]["input"] == 1.2
+    assert published["models"]["alpha"] == BASE["models"]["alpha"]
+    assert published["models"]["new-model"]["input"] == 1.2
     # The proposal was built on the new tip, so the human's model survives.
     assert "human-added" in published["models"]
 
@@ -215,8 +221,7 @@ def test_a_new_bot_branch_is_pushed_without_force(remote, tmp_path):
     tip = git(work, "rev-parse", "origin/main").stdout.strip()
 
     proposal = tmp_path / "proposal.json"
-    newer = copy.deepcopy(BASE)
-    newer["models"]["alpha"]["input"] = 1.2
+    newer = add_model(BASE, 1.2)
     proposal.write_text(json.dumps(newer))
 
     result = publish(work, proposal, "body", "title",
@@ -226,7 +231,8 @@ def test_a_new_bot_branch_is_pushed_without_force(remote, tmp_path):
     published = json.loads(
         git(remote, "show", f"refs/heads/{BOT}:{TARGET_REL_PATH}").stdout
     )
-    assert published["models"]["alpha"]["input"] == 1.2
+    assert published["models"]["alpha"] == BASE["models"]["alpha"]
+    assert published["models"]["new-model"]["input"] == 1.2
 
 
 def test_a_second_run_refreshes_the_same_branch(remote, tmp_path):
@@ -245,8 +251,7 @@ def test_a_second_run_refreshes_the_same_branch(remote, tmp_path):
         )
         tip = git(work, "rev-parse", "origin/main").stdout.strip()
         proposal = tmp_path / "proposal.json"
-        newer = copy.deepcopy(BASE)
-        newer["models"]["alpha"]["input"] = value
+        newer = add_model(BASE, value)
         proposal.write_text(json.dumps(newer))
         result = publish(work, proposal, "body", "title",
                          generated_at_sha=tip, run=stubbed_github)
@@ -258,7 +263,8 @@ def test_a_second_run_refreshes_the_same_branch(remote, tmp_path):
     published = json.loads(
         git(remote, "show", f"refs/heads/{BOT}:{TARGET_REL_PATH}").stdout
     )
-    assert published["models"]["alpha"]["input"] == 1.4
+    assert published["models"]["alpha"] == BASE["models"]["alpha"]
+    assert published["models"]["new-model"]["input"] == 1.4
 
 
 def test_a_refresh_updates_the_branch_content_on_the_remote(remote, tmp_path):
@@ -273,8 +279,7 @@ def test_a_refresh_updates_the_branch_content_on_the_remote(remote, tmp_path):
     git(work, "config", "user.email", "bot@example.invalid")
     tip = git(work, "rev-parse", "origin/main").stdout.strip()
 
-    proposed = copy.deepcopy(BASE)
-    proposed["models"]["alpha"]["input"] = 1.75
+    proposed = add_model(BASE, 1.75)
     proposal = tmp_path / "proposal.json"
     proposal.write_text(json.dumps(proposed))
 
@@ -285,4 +290,32 @@ def test_a_refresh_updates_the_branch_content_on_the_remote(remote, tmp_path):
     published = json.loads(
         git(remote, "show", f"refs/heads/{BOT}:{TARGET_REL_PATH}").stdout
     )
-    assert published["models"]["alpha"]["input"] == 1.75
+    assert published["models"]["alpha"] == BASE["models"]["alpha"]
+    assert published["models"]["new-model"]["input"] == 1.75
+
+
+@pytest.mark.parametrize("field", ["input", "output", "cache_read", "cache_write",
+                                   "provider", "unit", "aliases"])
+def test_existing_entries_are_refused_before_any_write(remote, tmp_path, field):
+    work = tmp_path / "work"
+    git(tmp_path, "clone", str(remote), str(work))
+    tip = git(work, "rev-parse", "HEAD").stdout.strip()
+    before = (work / TARGET_REL_PATH).read_text()
+    proposed = add_model(BASE, 1.2)
+    if field == "aliases":
+        proposed["aliases"]["new-alias"] = "alpha"
+    else:
+        proposed["models"]["alpha"][field] = (
+            "different" if field in ("provider", "unit") else 1.2
+        )
+    proposal = tmp_path / "proposal.json"
+    proposal.write_text(json.dumps(proposed))
+
+    result = publish(work, proposal, "body", "title",
+                     generated_at_sha=tip, run=stubbed_github)
+
+    assert not result.ok
+    assert "additions-only" in result.detail
+    assert git(work, "rev-parse", "HEAD").stdout.strip() == tip
+    assert (work / TARGET_REL_PATH).read_text() == before
+    assert git(remote, "rev-parse", "--verify", f"refs/heads/{BOT}", check=False).returncode != 0

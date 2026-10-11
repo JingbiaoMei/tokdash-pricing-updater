@@ -5,10 +5,10 @@
 # entries, or that moves one entry by an order of magnitude, means the scraper
 # or the source changed shape.
 
-# Hold the whole run when it wants to propose more changes than this.
+# Hold the new additions when their count exceeds this. Held repricings do not count.
 max_changes_per_run: 25
 
-# Hold any single change that moves one price field by more than this percent.
+# Repricing diagnostics only: all existing-price changes are held regardless.
 max_single_field_change_pct: 50
 
 # Fail the run when OpenRouter returns fewer rows than this. A truncated or

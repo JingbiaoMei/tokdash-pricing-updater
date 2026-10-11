@@ -54,12 +54,24 @@ def test_frozen_count_tells_the_real_story():
     )
     summary = coverage["summary"]
 
-    # Three keys can never move: two undiscovered, one protected manual.
+    # All five existing model entries are frozen, including discovered ones.
     assert summary["not_discovered"] == 3
     assert summary["protected_manual"] == 1
-    assert summary["frozen"] == 4
+    assert summary["frozen"] == 5
+    assert summary["existing_preserved"] == 5
+    assert summary["movable_by_bot"] == 0
     assert summary["total_keys"] == 6
-    assert "4 frozen" in summarize(coverage)
+    assert "5 existing models preserved" in summarize(coverage)
+
+
+def test_discovered_existing_models_do_not_count_as_new_additions():
+    proposed = dict(_current(), **{"gpt-5.5": {"provider": "openai", "input": 4.0}})
+    decision = Decision(PricingChange("gpt-5.5", "new", "safe_add"), True)
+
+    coverage = build_coverage(_current(), proposed, [decision], [], set(), set())
+
+    assert coverage["summary"]["movable_by_bot"] == 1
+    assert coverage["summary"]["existing_preserved"] == 5
 
 
 def test_held_changes_are_reported_as_held():

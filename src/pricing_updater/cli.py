@@ -364,11 +364,15 @@ def cmd_diff(args):
 
 
 def cmd_propose(args):
-    """Full interactive pipeline: scrape -> diff -> review -> write proposed DB."""
+    """Interactive review of new model additions; existing prices are preserved."""
     (providers_cfg, aliases_cfg, manual_cfg, derived_cfg,
      policy_cfg, official_cfg, family_map_cfg, fx_cfg) = _load_config()
     output_dir = _output_dir()
     state_dir = _state_dir()
+
+    proposals_dir = output_dir / "proposals"
+    proposals_dir.mkdir(parents=True, exist_ok=True)
+    _clear_publication_artifacts(proposals_dir)
 
     current_db = _load_current_db(args.tokdash_repo)
 
@@ -395,7 +399,16 @@ def cmd_propose(args):
     print(f"{'=' * 60}\n")
 
     from .approval import interactive_review
-    approved = interactive_review(changes)
+    from . import guards
+
+    decisions = guards.classify(changes, guards.GuardPolicy.load(_load_anomaly_cfg()))
+    candidates = guards.proposable_changes(decisions)
+    for held in guards.held_changes(decisions):
+        print(f"Held: {held.change.model_id}: {'; '.join(held.reasons)}")
+    if not candidates:
+        print("No new model additions are eligible. Nothing to write.")
+        return
+    approved = interactive_review(candidates)
 
     if not approved:
         print("No changes approved. Nothing to write.")
@@ -403,7 +416,7 @@ def cmd_propose(args):
 
     # Re-render with only approved changes applied to current DB.
     final_db = _apply_approved(current_db, proposed_db, approved)
-    _structural_gate(final_db, current_db)
+    _structural_gate(final_db, current_db, additions_only=True)
     out_path = output_dir / "proposals" / "proposed_pricing_db.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -414,18 +427,18 @@ def cmd_propose(args):
     print(f"\nTo apply: cp {out_path} {args.tokdash_repo}/src/tokdash/pricing_db.json")
 
 
-def _structural_gate(final_db: dict, current_db: dict) -> None:
+def _structural_gate(final_db: dict, current_db: dict, *, additions_only: bool = False) -> None:
     """Stop a malformed database from becoming an artifact, a PR, or a hand copy.
 
     The gate belongs to the validate job, but that job is not the only way this
-    code reaches the other repository: `diff` writes the file a person copies with
+    code reaches the other repository: `propose` writes the file a person copies with
     cp, and `auto --create-pr` publishes from this process. Checking the assembled
     database rather than the rendered one keeps a change a guard already held from
     blocking a proposal that never intended to make it.
     """
     from . import structural_check
 
-    findings = structural_check.check(final_db, current_db)
+    findings = structural_check.check(final_db, current_db, additions_only=additions_only)
     if not findings:
         return
     for finding in findings[:8]:
@@ -441,10 +454,9 @@ def _structural_gate(final_db: dict, current_db: dict) -> None:
 def cmd_auto(args):
     """CI mode: scrape, diff, guard, then publish one reviewable PR.
 
-    Everything the guards accept goes into the PR diff, additions and repricing
-    alike, so reviewing the diff and merging is the whole job. Anything a guard
-    distrusts is held out of the diff and listed in the body instead. Publication
-    failure is a failed run, never a green one.
+    Only new model entries go into the PR diff. Repricing, aliases and removals
+    are held for manual maintenance and listed in the evidence. Publication
+    checks the same additions-only rule independently before moving any branch.
 
     The base branch is fetched and read before anything is generated, and the
     proposal is pinned to that commit. Generating from whatever is on disk is how
@@ -574,7 +586,7 @@ def cmd_auto(args):
         return
 
     final_db = _apply_approved(current_db, proposed_db, proposable)
-    _structural_gate(final_db, current_db)
+    _structural_gate(final_db, current_db, additions_only=True)
     out_path = output_dir / "proposals" / "proposed_pricing_db.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(dump_json(final_db))
@@ -615,7 +627,7 @@ def cmd_auto(args):
     body_path.write_text(body + "\n")
     print(f"PR body: {body_path}")
 
-    title = f"Pricing DB update ({today})"
+    title = f"Add new model prices ({today})"
 
     # The publish job runs from the artifacts, not from this process, so what it
     # decides here has to survive the handoff. A title or draft flag rebuilt on
@@ -713,9 +725,9 @@ def _apply_approved(current_db: dict, proposed_db: dict, approved) -> dict:
     models: dict = {}
     for key, value in current_models.items():
         if key in approved_chg and isinstance(proposed_models.get(key), dict):
-            models[key] = proposed_models[key]
+            models[key] = copy.deepcopy(proposed_models[key])
         else:
-            models[key] = value
+            models[key] = copy.deepcopy(value)
 
     # 2. Group approved-new models by provider (sorted for deterministic output).
     new_by_provider: dict[str, list[str]] = {}

@@ -39,13 +39,15 @@ def _entries(models: dict) -> dict:
     return {k: v for k, v in models.items() if isinstance(v, dict)}
 
 
-def check(proposed: dict, base: dict | None) -> list[str]:
+def check(proposed: dict, base: dict | None, *, additions_only: bool = False) -> list[str]:
     """Every way this proposal is malformed, as human-readable findings.
 
     Args:
         proposed: the database the bot wants to publish.
         base: the database it was computed against, or None to skip the
             comparisons that need one (used when validating a bare file).
+        additions_only: require every existing model and the alias map to stay
+            unchanged. Automation uses this; interactive maintenance does not.
     """
     findings: list[str] = []
 
@@ -91,6 +93,17 @@ def check(proposed: dict, base: dict | None) -> list[str]:
                     f"alias {alias!r} points at {target!r}, which is not a model")
     else:
         findings += _check_against_base(proposed, base, entries, aliases)
+
+    if additions_only:
+        if base is None:
+            findings.append("additions-only validation requires the current database")
+        else:
+            for model_id, previous in (base.get("models") or {}).items():
+                if model_id in models and models[model_id] != previous:
+                    findings.append(
+                        f"{model_id}: additions-only automation cannot modify an existing entry")
+            if aliases != (base.get("aliases") or {}):
+                findings.append("additions-only automation cannot change aliases")
 
     return findings
 
@@ -158,6 +171,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base", type=Path,
                         help=f"Current database (default: <tokdash-repo>/{DB_REL_PATH})")
     parser.add_argument("--tokdash-repo", type=Path, help="Where to find the current database")
+    parser.add_argument("--additions-only", action="store_true",
+                        help="Refuse changes to existing entries or aliases")
     parser.add_argument("--json-out", type=Path)
     args = parser.parse_args(argv)
 
@@ -169,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"::error::cannot read the databases to compare: {exc}", file=sys.stderr)
         return 1
 
-    findings = check(proposed, base)
+    findings = check(proposed, base, additions_only=args.additions_only)
     if args.json_out:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(json.dumps(

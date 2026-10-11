@@ -201,3 +201,33 @@ def test_the_command_passes_a_repriced_database(base, proposed, capsys, tmp_path
 def test_the_command_cannot_read_its_input(proposed, capsys):
     assert main(["--proposed", "/nonexistent/proposed.json"]) == 1
     assert "cannot read" in capsys.readouterr().err
+def test_additions_only_accepts_new_models_and_preserves_existing_entries():
+    proposed = json.loads(json.dumps(DB))
+    proposed["models"]["new-model"] = dict(proposed["models"]["alpha"])
+
+    assert check(proposed, DB, additions_only=True) == []
+
+
+def test_additions_only_refuses_a_repricing_that_manual_review_can_accept():
+    proposed = json.loads(json.dumps(DB))
+    proposed["models"]["alpha"]["input"] = 1.1
+
+    assert check(proposed, DB) == []
+    assert any("cannot modify an existing entry" in finding
+               for finding in check(proposed, DB, additions_only=True))
+
+
+def test_additions_only_requires_a_base_database():
+    assert "requires the current database" in check(DB, None, additions_only=True)[0]
+
+
+def test_the_command_enforces_additions_only(tmp_path):
+    base = tmp_path / "base.json"
+    proposal = tmp_path / "proposal.json"
+    base.write_text(json.dumps(DB))
+    proposed = json.loads(json.dumps(DB))
+    proposed["models"]["alpha"]["input"] = 1.1
+    proposal.write_text(json.dumps(proposed))
+
+    assert main(["--base", str(base), "--proposed", str(proposal),
+                 "--additions-only"]) == 1
