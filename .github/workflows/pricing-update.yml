@@ -65,7 +65,9 @@ jobs:
         # --dry-run: the branch move and PR belong to the publish job, after
         # validation. Here we only produce the proposal and its evidence. The
         # CLI fetches the base itself, reads the database at that commit rather
-        # than off disk, and writes output/proposals/base_sha.txt.
+        # than off disk, and writes output/proposals/base_sha.txt. It also
+        # removes any publication artifact from an earlier run first, so a run
+        # that finds nothing to propose cannot leave yesterday's proposal behind.
         run: |
           # Without pipefail a failing generator would report tee's status and
           # the job would pass while producing nothing.
@@ -107,6 +109,11 @@ jobs:
     if: needs.generate.outputs.base_sha != ''
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      # A price-expectation failure is not a malformed database, and a bot that
+      # cannot propose a repricing has nothing to propose. Those failures publish
+      # as a draft instead of blocking; structural ones never publish at all.
+      needs_draft: ${{ steps.check.outputs.needs_draft }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -132,36 +139,47 @@ jobs:
           ref: ${{ needs.generate.outputs.base_sha }}
           persist-credentials: false
 
-      - name: Install tokdash and pytest
+      - name: Install tokdash, the updater, and pytest
         working-directory: tokdash
         # Tokdash declares no [dev] extra, so `pip install -e .[dev]` warns,
         # succeeds, and leaves pytest missing. Install what the checks need by
         # name so a missing dependency is a red step rather than a green no-op.
+        # The updater is installed too because the checker doing the split is
+        # updater code, not something to reimplement in shell.
         run: |
           python -m pip install --quiet -e .
           python -m pip install --quiet pytest
           python -m pytest --version
+          python -m pip install --quiet -e ../
 
-      - name: Apply the proposed database
+      - name: Consumer checks, structural and price-expectation
+        id: check
+        # The proposed database is swapped in and restored by the checker itself.
+        # It runs tokdash's checks twice, once against the current database with
+        # every price multiplied, and separates the failures that only a price move
+        # explains from the ones a repricing must never cause.
         run: |
-          if [ -f proposal/proposals/proposed_pricing_db.json ]; then
-            cp proposal/proposals/proposed_pricing_db.json \
-               tokdash/src/tokdash/pricing_db.json
-            echo "applied proposed pricing_db.json"
-          else
-            echo "no proposed database; nothing to validate"
-          fi
+          python -m pricing_updater.consumer_checks \
+            --tokdash-repo tokdash \
+            --proposed proposal/proposals/proposed_pricing_db.json \
+            --json-out validation/consumer_checks.json \
+            --md-out validation/consumer_checks.md
+          # Read back rather than assume: if the report is missing or malformed
+          # this step fails, and a run that cannot say what it validated does not
+          # get to publish anything.
+          needs_draft="$(python -c 'import json; print(str(json.load(open("validation/consumer_checks.json"))["needs_draft"]).lower())')"
+          echo "needs_draft=$needs_draft" >> "$GITHUB_OUTPUT"
+          echo "consumer checks need_draft=$needs_draft"
 
-      # The consumer contract lives in tokdash. Repricing legitimately moves
-      # fixed-price expectations, so a failure here means the PR must carry the
-      # reviewed test update, not that the bot should be ignored.
-      - name: Tokdash pricing checks
-        working-directory: tokdash
-        run: |
-          PYTHONPATH=src python -m pytest -q \
-            tests/test_pricing_db_contract.py \
-            tests/test_model_name_normalization.py \
-            tests/test_pricing_normalization.py
+      # The checker itself emits the ::error:: annotation, for structural failures
+      # and for a checkout whose check files cannot be found. A second message from
+      # a step that also runs when an earlier one failed would only mislead.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: validation
+          path: validation
+          retention-days: 90
 
   publish:
     name: Publish the PR
@@ -200,6 +218,12 @@ jobs:
           path: proposal
 
       - if: steps.gate.outputs.enabled == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8b5a5461e7c # v8.0.1
+        with:
+          name: validation
+          path: validation
+
+      - if: steps.gate.outputs.enabled == 'true'
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -235,6 +259,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PRICING_BOT_TOKEN }}
           BASE_SHA: ${{ needs.generate.outputs.base_sha }}
+          NEEDS_DRAFT: ${{ needs.validate.outputs.needs_draft }}
           # Belt and braces with the job condition above: a dispatch that asked
           # for a dry run cannot push even if the condition is edited away.
           DRY_RUN: ${{ inputs.dry_run }}
@@ -253,16 +278,37 @@ jobs:
           plan = json.loads(pathlib.Path("proposal/proposals/publish_plan.json").read_text())
           body = pathlib.Path("proposal/proposals/pr_body.md")
 
+          # Two SHAs now exist on this side of the handoff: the pin the jobs were
+          # given, and the one the generator wrote into the plan. If they disagree,
+          # the artifact did not come from this run, and publishing an unknown
+          # proposal against an unknown base is exactly what the pin is for.
+          handoff = os.environ.get("BASE_SHA", "")
+          if not handoff:
+              print("::error::no base commit reached this job; refusing to publish")
+              raise SystemExit(1)
+          if plan.get("base_sha") != handoff:
+              print("::error::the proposal in this artifact was built against "
+                    f"{str(plan.get('base_sha'))[:7] or 'nothing'}, but this run pinned "
+                    f"{handoff[:7]}; refusing to publish a proposal from another run")
+              raise SystemExit(1)
+
+          body_text = body.read_text() if body.exists() else "See the run artifacts."
+          report = pathlib.Path("validation/consumer_checks.md")
+          if report.exists():
+              body_text += "\n" + report.read_text()
+
           result = publish(
               tokdash_repo=pathlib.Path("tokdash"),
               proposed_db_path=proposed,
-              body=body.read_text() if body.exists() else "See the run artifacts.",
+              body=body_text,
               title=plan["title"],
               branch="bot/pricing-db",
               base="main",
               labels=["pricing", "automated"],
-              generated_at_sha=os.environ["BASE_SHA"] or plan["base_sha"],
-              draft=bool(plan.get("draft")),
+              generated_at_sha=handoff,
+              # The generator's guards and the consumer checks both get a vote:
+              # either one alone is enough to hold the PR in draft.
+              draft=bool(plan.get("draft")) or os.environ.get("NEEDS_DRAFT") == "true",
               dry_run=os.environ.get("DRY_RUN") == "true",
           )
           for warning in result.warnings:
