@@ -215,6 +215,11 @@ python -m pricing_updater --tokdash-repo ../tokdash auto --create-pr \
 Publication failure exits non-zero, so a run that could not open its PR does not
 look green. `--dry-run` changes nothing at all, including the checked-out branch.
 
+The four publication artifacts (`proposed_pricing_db.json`, `pr_body.md`,
+`publish_plan.json`, `base_sha.txt`) are removed before generation rather than
+written only on the success path, so a run that ends with nothing to propose leaves
+nothing for a later job to publish.
+
 Artifacts land in `output/proposals/`: the proposed database, the diff report,
 `coverage_*.json`, `provenance_*.json`, `source_health_*.json` (which official
 adapters answered and which fell back to YAML), `base_sha.txt` and
@@ -485,6 +490,17 @@ This test asserts that:
 - Derived (antigravity) models resolve and match their base model's pricing.
 - At least one model per tracked provider resolves.
 
+To get the same split CI makes, run the checker from this repo instead. It prints
+which failures a repricing is allowed to cause and exits non-zero only for the
+structural ones:
+
+```bash
+PYTHONPATH=src python -m pricing_updater.consumer_checks \
+  --tokdash-repo ../tokdash \
+  --proposed output/proposals/proposed_pricing_db.json \
+  --json-out /tmp/consumer_checks.json
+```
+
 ## Directory structure
 
 ```
@@ -526,7 +542,8 @@ tokdash-pricing-updater/
 │   ├── guards.py               # Proposable vs held, threshold policy
 │   ├── coverage.py             # Which keys the bot can actually move
 │   ├── approval.py             # Interactive + auto review
-│   └── github_pr.py            # Publish to one bot branch, open or refresh one PR
+│   ├── github_pr.py            # Publish to one bot branch, open or refresh one PR
+│   └── consumer_checks.py      # Split tokdash's checks into structural and price-expectation
 ├── state/
 │   └── last_seen.json          # Gitignored; staleness tracking across runs
 ├── output/                     # Gitignored; all generated artifacts
@@ -573,8 +590,19 @@ Two workflows live in `.github/workflows/`:
   database before anything is pushed), and **publish**. All three work on one base
   commit: generate records the SHA it read, and validate and publish check that SHA
   out rather than a `main` that may have moved since. `publish` re-fetches and
-  refuses outright if the base has moved by then.
+  refuses outright if the base has moved by then, and refuses an artifact whose own
+  plan names a different commit, so a proposal from another run cannot ride along.
   The `dry_run` dispatch input stops the run after validation and publishes nothing.
+
+  Validation separates two kinds of consumer failure, because only one of them is a
+  defect. `pricing_updater.consumer_checks` runs tokdash's checks twice: once with
+  every price in the current database multiplied, once with the proposal. Failures
+  the multiplication explains are price expectations, and those publish as a **draft**
+  with the failing test names in the body, so the price change and the test update
+  get reviewed together. Failures it does not explain are structural (an alias that
+  stops resolving, a relationship between two fields that inverts) and nothing is
+  published. Which test is which is measured rather than listed, so a new consumer
+  test needs no edit here; a renamed or missing check file is an error, not a pass.
 
 Publishing needs a credential that is authorized on the tokdash repo. The updater's
 own `GITHUB_TOKEN` cannot write to another repository, so set `PRICING_BOT_TOKEN`
@@ -588,33 +616,37 @@ inactivity, which is why `workflow_dispatch` is a first-class path.
 Honest state as of 2026-10-11, measured by running `auto --create-pr --dry-run`
 against the real tokdash checkout.
 
-1. **The guard thresholds currently silence the bot.** Today's run computed 90
-   changes and proposed none of them: 44 tripped `max_changes_per_run=25`, which
-   holds the whole set, and 46 models tripped the 50% single-field guard. On these
-   settings a scheduled run is green and publishes nothing. Either the shipped
-   `pricing_db.json` gets one manual rebalance first, or the thresholds get
-   retuned. Deciding that is a policy call, not a bug.
-2. **Source precedence is undecided (issue #202, D1).** The overlay takes the
+1. **The guard thresholds currently silence the bot.** The last run computed 91
+   changes and proposed none of them: 45 were held only because the run exceeded
+   `max_changes_per_run=25`, which holds the whole set, and 46 tripped the 50%
+   single-field guard. On these settings a scheduled run is green and publishes
+   nothing. Either the shipped `pricing_db.json` gets one manual rebalance first,
+   or the thresholds get retuned. Deciding that is a policy call, not a bug.
+2. **The bot cannot update tokdash's own price expectations.** A repricing that
+   moves a number a consumer test pins now reaches a draft PR instead of being
+   blocked, but the test edit is still a human's: the bot publishes one file,
+   `pricing_db.json`, and refuses a wider diff by design.
+3. **Source precedence is undecided (issue #202, D1).** The overlay takes the
    larger of OpenRouter and the official page per field, so a model can end up
    with fields from both sources and an aggregator price can beat the provider's
    own page. Nothing here pretends that is settled; the tests pin today's
    behaviour, not a ratified rule.
-3. **Coverage is narrower than it looks.** Of 364 keys, 190 are movable by the
+4. **Coverage is narrower than it looks.** Of 364 keys, 189 are movable by the
    bot, 71 were not discovered by the scraper at all and 13 are protected manual
    or derived entries. Official-only models and protected entries never receive a
    repricing proposal, so a price change on one of them still needs a human.
-4. **Three of six official adapters are not answering.** The last run recorded
+5. **Three of six official adapters are not answering.** The last run recorded
    DeepSeek parsing nothing and Moonshot and Xiaomi returning nothing, so those
    numbers came from `config/official_prices.yaml`. The run says so in
    `source_health_*.json` and in the PR body now, which is the fix for the
    invisibility; the adapters themselves still need work.
-5. **No dependency lock.** CI resolves `httpx` and `pyyaml` from unpinned ranges
+6. **No dependency lock.** CI resolves `httpx` and `pyyaml` from unpinned ranges
    on every run. `uv.lock` is gitignored, so nothing pins a transitive version.
-6. **No watch-issue automation.** Held findings, unresolved evidence and scraper
+7. **No watch-issue automation.** Held findings, unresolved evidence and scraper
    failures are reported in the PR body and in `output/proposals/`, and a run with
    nothing proposable leaves no trace on GitHub beyond its artifacts. Opening an
    issue for those is not built.
-7. **Publication is inert until a token exists.** `PRICING_BOT_TOKEN` must be a
+8. **Publication is inert until a token exists.** `PRICING_BOT_TOKEN` must be a
    credential authorized on the tokdash repo; without it the publish step skips
    with a warning by design.
 
@@ -631,6 +663,10 @@ against the real tokdash checkout.
 | Family mapping | Official providers list fewer model IDs than OpenRouter (e.g. DeepSeek lists 2, OpenRouter lists 11). `config/official_family_map.yaml` maps versioned variants to their official pricing family via glob patterns. |
 | YAML fallback for SPA pages | Moonshot and Xiaomi official pages are JavaScript SPAs that don't serve pricing in initial HTML. Live adapters attempt to fetch them each run (will start working if SSR is added); YAML config provides the fallback. |
 | Decimal arithmetic | OpenRouter returns per-token prices as strings (`"0.000005"`). Parsing with `Decimal` avoids floating-point drift during the `* 1,000,000` conversion to per-MTok. |
+| Consumer checks are measured, not listed | Tokdash's consumer suite mixes "does this resolve" with "does this cost exactly 2.0". Multiplying every price and seeing what breaks identifies the second group, so a repricing publishes as a draft rather than being blocked forever by a list of test names that would rot. |
+| One run owns the publication artifacts | `proposed_pricing_db.json`, `pr_body.md`, `publish_plan.json` and `base_sha.txt` are cleared before generation. A run that finds nothing to propose otherwise leaves yesterday's proposal next to today's pin, and the publish job reads those files by name. |
+| A rerun can retract a PR's review status | Guards tripping on a rerun put an already-open PR back into draft with `gh pr ready --undo`, and a clean rerun takes a draft out. A proposal the bot no longer trusts should not sit one merge from main. |
+| Adapters publish only what the page printed | The DeepSeek adapter used to fill an absent cache column with 10% of input, which put an invented number in the field reserved for first-party prices and read as a published zero on a free model. An absent field is left absent so the cache heuristic guesses visibly instead. |
 | Official 0 is data, not a gap | A provider that publishes a free cache read means it. The overlay settles the field and leaves it flagged, so the cache heuristic never stamps a guessed factor over a real zero. |
 | Manual/derived/alias configs | These represent tokdash's compatibility surface, not scraped data. Keeping them in YAML config files means the scraper can never accidentally remove or overwrite them. |
 | Staleness gating (last_seen) | A model disappearing from one scrape could be a transient API issue. Requiring 4+ consecutive misses before even flagging prevents false removal proposals. |
