@@ -106,16 +106,25 @@ def apply_official_overlay(
             )
             continue
 
+        source_label = f"official:{official.get('source', 'official')}"
         for cfg_key, attr in _PRICE_FIELDS:
             official_val = official.get(cfg_key)
             if official_val is None:
                 continue
             official_usd = _to_usd(official_val, currency, rates)
+            m.evidence.setdefault(cfg_key, {})["official_usd"] = float(official_usd)
             current_dec = getattr(m, attr)
             if official_usd > current_dec:
                 setattr(m, attr, official_usd)
+                m.field_sources[cfg_key] = source_label
+                # A published official value settles both a field the scraper
+                # never saw and one it saw as free, so neither stays flagged.
+                m.missing_fields.discard(cfg_key)
+                m.explicit_zero_fields.discard(cfg_key)
                 if not m.note:
                     m.note = f"Official price used ({official.get('source', 'official')})"
+            else:
+                m.field_sources.setdefault(cfg_key, m.source_name or "openrouter")
 
     return models
 
@@ -136,11 +145,17 @@ def apply_cache_fallback(
         read_factor = Decimal(str(fb.get("cache_read_factor", 0.10)))
         write_factor = Decimal(str(fb.get("cache_write_factor", 1.00)))
 
-        if m.cache_read_per_mtok == 0 and m.input_per_mtok > 0:
+        # A published cache price of 0 is a fact about the provider, not a gap
+        # to fill in, so explicit zeros are left alone.
+        if "cache_read" not in m.explicit_zero_fields and m.cache_read_per_mtok == 0 and m.input_per_mtok > 0:
             m.cache_read_per_mtok = m.input_per_mtok * read_factor
+            m.field_sources["cache_read"] = "derived_from_input"
+            m.missing_fields.discard("cache_read")
 
-        if m.cache_write_per_mtok == 0 and m.input_per_mtok > 0:
+        if "cache_write" not in m.explicit_zero_fields and m.cache_write_per_mtok == 0 and m.input_per_mtok > 0:
             m.cache_write_per_mtok = m.input_per_mtok * write_factor
+            m.field_sources["cache_write"] = "derived_from_input"
+            m.missing_fields.discard("cache_write")
 
     return models
 
