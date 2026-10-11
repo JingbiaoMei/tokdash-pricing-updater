@@ -339,3 +339,21 @@ models:
     output: 0.30
     source: "platform.xiaomimimo.com"
     note: "YAML fallback — verified $0.1/$0.3 from official Xiaomi announcement"
+
+  # ─── StepFun (https://platform.stepfun.ai/docs/en/guides/pricing/details) ───
+  # Live scraper in official_stepfun.py fetches the same page each run.
+  step-3.5-flash:
+    provider: stepfun
+    currency: USD
+    input: 0.10
+    output: 0.30
+    cache_read: 0.02
+    source: "platform.stepfun.ai/docs/en/guides/pricing/details"
+
+  step-3.7-flash:
+    provider: stepfun
+    currency: USD
+    input: 0.20
+    output: 1.15
+    cache_read: 0.04
+    source: "platform.stepfun.ai/docs/en/guides/pricing/details"

@@ -1,0 +1,86 @@
+{
+  "_comment": "Tracked OpenRouter fixture so the coverage tests run on a clean clone with no network and no gitignored snapshot. This is a corpus of models the scraper has actually returned, not today's live list: xiaomi/mimo-v2-flash was delisted after March, and a test that asserted it against a current capture would fail for a reason that has nothing to do with the code. Refresh by copying the named IDs out of output/raw/openrouter_<date>.json, latest capture wins.",
+  "data": [
+    {
+      "id": "minimax/minimax-m2-her",
+      "name": "MiniMax: MiniMax M2-her",
+      "created_by": "",
+      "context_length": 65536,
+      "pricing": {
+        "prompt": "0.0000003",
+        "completion": "0.0000012",
+        "input_cache_read": "0.00000003"
+      },
+      "captured": "2026-10-08"
+    },
+    {
+      "id": "minimax/minimax-01",
+      "name": "MiniMax: MiniMax-01",
+      "created_by": "",
+      "context_length": 1000192,
+      "pricing": {
+        "prompt": "0.0000002",
+        "completion": "0.0000011"
+      },
+      "captured": "2026-10-08"
+    },
+    {
+      "id": "deepseek/deepseek-chat",
+      "name": "DeepSeek: DeepSeek V3",
+      "created_by": "",
+      "context_length": 163840,
+      "pricing": {
+        "prompt": "0.0000002574",
+        "completion": "0.0000010287"
+      },
+      "captured": "2026-10-08"
+    },
+    {
+      "id": "deepseek/deepseek-r1",
+      "name": "DeepSeek: R1",
+      "created_by": "",
+      "context_length": 64000,
+      "pricing": {
+        "prompt": "0.0000007",
+        "completion": "0.0000025"
+      },
+      "captured": "2026-10-08"
+    },
+    {
+      "id": "xiaomi/mimo-v2-flash",
+      "name": "Xiaomi: MiMo-V2-Flash",
+      "created_by": "",
+      "context_length": 262144,
+      "pricing": {
+        "prompt": "0.0000001",
+        "completion": "0.0000003",
+        "input_cache_read": "0.00000001"
+      },
+      "captured": "2026-06-15"
+    },
+    {
+      "id": "z-ai/glm-5",
+      "name": "Z.ai: GLM 5",
+      "created_by": "",
+      "context_length": 204800,
+      "pricing": {
+        "prompt": "0.0000006",
+        "completion": "0.00000192",
+        "input_cache_read": "0.00000012"
+      },
+      "captured": "2026-10-08"
+    },
+    {
+      "id": "moonshotai/kimi-k2.5",
+      "name": "MoonshotAI: Kimi K2.5",
+      "created_by": "",
+      "context_length": 262144,
+      "pricing": {
+        "prompt": "0.00000045",
+        "completion": "0.00000225",
+        "input_cache_read": "0.00000007"
+      },
+      "captured": "2026-10-08"
+    }
+  ]
+}

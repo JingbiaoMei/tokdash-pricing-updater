@@ -1,11 +1,19 @@
 """Pricing policy: FX-normalized official overlay, cache fallback, rounding.
 
 Pipeline order:
-1. Resolve family mapping (versioned IDs → family official price).
+1. Resolve family mapping (versioned IDs -> family official price).
 2. Convert official prices to USD via FX rates.
-3. Apply max(openrouter, official) per field.
-4. Fill heuristic cache rates when no source provided them.
+3. Settle each price field: official wins where it is the only source or the
+   bigger number, otherwise the scraped value stands.
+4. Fill heuristic cache rates only where no source published anything.
 5. Round all prices to configured precision.
+
+Open decision (issue #202, D1): step 3 compares OpenRouter against the official
+page field by field, so a model can end up with one field from each source, and
+a higher aggregator price beats the provider's own page. Whether the official
+price should simply win whenever both exist is a policy call that has not been
+made yet; the existing tests pin today's max() behaviour, so treat them as the
+status quo rather than as a ratified rule.
 """
 
 from __future__ import annotations
@@ -14,6 +22,7 @@ import fnmatch
 from decimal import ROUND_HALF_UP, Decimal
 
 from .canonicalize import CanonicalModel
+from .sources.base import clean_price
 
 _PRICE_FIELDS = [
     ("input", "input_per_mtok"),
@@ -57,7 +66,7 @@ def resolve_family(
 # FX normalization
 # ---------------------------------------------------------------------------
 
-def _to_usd(value: float | int, currency: str, fx_rates: dict[str, float]) -> Decimal:
+def _to_usd(value: Decimal | float | int, currency: str, fx_rates: dict[str, float]) -> Decimal:
     """Convert a price from the given currency to USD."""
     rate = fx_rates.get(currency)
     if rate is None:
@@ -77,12 +86,17 @@ def apply_official_overlay(
     family_map: list[dict] | None = None,
     fx_rates: dict[str, float] | None = None,
 ) -> list[CanonicalModel]:
-    """Apply official prices using max(openrouter, official_usd) per field.
+    """Overlay official prices onto scraped ones, field by field.
 
     Steps per model:
     1. Resolve official entry via exact key or family map.
     2. Convert official prices from their native currency to USD.
-    3. For each price field, keep max(openrouter, official_usd).
+    3. Per field, take the official value when it is larger or when the scrape
+       never settled the field; otherwise keep the scraped value.
+
+    A field the scrape published as 0 is a published fact, so an official 0
+    settles it and leaves it flagged, which stops apply_cache_fallback from
+    substituting a guessed factor.
     """
     if not official_prices:
         return models
@@ -106,16 +120,42 @@ def apply_official_overlay(
             )
             continue
 
+        source_label = f"official:{official.get('source', 'official')}"
         for cfg_key, attr in _PRICE_FIELDS:
             official_val = official.get(cfg_key)
             if official_val is None:
                 continue
-            official_usd = _to_usd(official_val, currency, rates)
+            raw_usd = clean_price(official_val)
+            if raw_usd is None:
+                print(
+                    f"  WARNING: {m.canonical_id!r} official {cfg_key} price "
+                    f"{official_val!r} from {official.get('source', 'official')} is not a "
+                    f"finite non-negative number; keeping the scraped price."
+                )
+                continue
+            official_usd = _to_usd(raw_usd, currency, rates)
+            m.evidence.setdefault(cfg_key, {})["official_usd"] = float(official_usd)
             current_dec = getattr(m, attr)
-            if official_usd > current_dec:
+            # A published official value settles a field the scraper could not
+            # fill, even when it is not the larger number. A missing cache field
+            # is internally 0, so a strict > test dropped an official 0 and the
+            # cache heuristic guessed over a real "cache reads are free".
+            unresolved = cfg_key in m.missing_fields or cfg_key in m.explicit_zero_fields
+            if official_usd > current_dec or unresolved:
                 setattr(m, attr, official_usd)
+                m.field_sources[cfg_key] = source_label
+                # The official value answers the question, so the field stops
+                # being missing. A zero stays flagged as an explicit zero, which
+                # is what keeps apply_cache_fallback from guessing over it.
+                m.missing_fields.discard(cfg_key)
+                if official_usd == 0:
+                    m.explicit_zero_fields.add(cfg_key)
+                else:
+                    m.explicit_zero_fields.discard(cfg_key)
                 if not m.note:
                     m.note = f"Official price used ({official.get('source', 'official')})"
+            else:
+                m.field_sources.setdefault(cfg_key, m.source_name or "openrouter")
 
     return models
 
@@ -136,11 +176,17 @@ def apply_cache_fallback(
         read_factor = Decimal(str(fb.get("cache_read_factor", 0.10)))
         write_factor = Decimal(str(fb.get("cache_write_factor", 1.00)))
 
-        if m.cache_read_per_mtok == 0 and m.input_per_mtok > 0:
+        # A published cache price of 0 is a fact about the provider, not a gap
+        # to fill in, so explicit zeros are left alone.
+        if "cache_read" not in m.explicit_zero_fields and m.cache_read_per_mtok == 0 and m.input_per_mtok > 0:
             m.cache_read_per_mtok = m.input_per_mtok * read_factor
+            m.field_sources["cache_read"] = "derived_from_input"
+            m.missing_fields.discard("cache_read")
 
-        if m.cache_write_per_mtok == 0 and m.input_per_mtok > 0:
+        if "cache_write" not in m.explicit_zero_fields and m.cache_write_per_mtok == 0 and m.input_per_mtok > 0:
             m.cache_write_per_mtok = m.input_per_mtok * write_factor
+            m.field_sources["cache_write"] = "derived_from_input"
+            m.missing_fields.discard("cache_write")
 
     return models
 

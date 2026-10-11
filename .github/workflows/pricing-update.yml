@@ -1,0 +1,351 @@
+name: Add new model prices
+
+# Generate, validate, publish, as three separately rerunnable jobs. Nothing is
+# pushed before the proposed database has been validated against tokdash's own
+# consumer checks, and nothing merges here.
+
+on:
+  # Enable after a successful manual pilot and PRICING_BOT_TOKEN setup. The bot
+  # only adds new model entries; existing prices and aliases are preserved.
+  # Scheduled runs only execute
+  # from the default branch, can be delayed or coalesced, and stop after 60 days
+  # of repo inactivity.
+  #
+  # schedule:
+  #   - cron: '0 6 * * 2,4'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Generate and validate, publish nothing
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pricing-update
+  cancel-in-progress: false
+
+env:
+  TOKDASH_REPO: JingbiaoMei/Tokdash
+  BOT_BRANCH: bot/pricing-db
+
+jobs:
+  generate:
+    name: Generate proposal
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      # Every later job works against this commit. Three independent checkouts of
+      # a moving branch is how a proposal generated against one database ends up
+      # published on top of a newer one.
+      base_sha: ${{ steps.pin.outputs.base_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install the updater
+        # An editable install of this repo, not a list of its dependencies. The
+        # bare `pip install httpx pyyaml` left the package itself unimportable,
+        # so `python -m pricing_updater` died with "No module named
+        # pricing_updater" on a clean runner.
+        run: python -m pip install --quiet -e .
+
+      - name: Checkout tokdash at main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.TOKDASH_REPO }}
+          path: tokdash
+          persist-credentials: false
+
+      - name: Generate
+        # --dry-run: the branch move and PR belong to the publish job, after
+        # validation. Here we only produce the proposal and its evidence. The
+        # CLI fetches the base itself, reads the database at that commit rather
+        # than off disk, and writes output/proposals/base_sha.txt. It also
+        # removes any publication artifact from an earlier run first, so a run
+        # that finds nothing to propose cannot leave yesterday's proposal behind.
+        run: |
+          # Without pipefail a failing generator would report tee's status and
+          # the job would pass while producing nothing.
+          set -o pipefail
+          python -m pricing_updater --tokdash-repo tokdash auto \
+            --create-pr --dry-run --branch "$BOT_BRANCH" 2>&1 | tee generate.log
+
+      - name: Pin the base commit
+        id: pin
+        # The SHA the proposal was actually computed against, read back from the
+        # artifact rather than guessed from the ref.
+        run: |
+          sha="$(cat output/proposals/base_sha.txt)"
+          test -n "$sha" || { echo "::error::no base_sha.txt; cannot pin validation to a commit"; exit 1; }
+          echo "base_sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Proposal is pinned to tokdash $sha"
+
+      - name: Summarize
+        run: |
+          {
+            echo "## Run summary"
+            echo
+            echo "Base: \`${{ steps.pin.outputs.base_sha }}\`"
+            echo
+            tail -n 40 generate.log | sed 's/^/    /'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: proposal
+          path: |
+            output/proposals
+            output/raw
+          retention-days: 90
+
+  validate:
+    name: Validate against tokdash checks
+    needs: generate
+    if: needs.generate.outputs.base_sha != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      # Publication is gated by structural_check, which decides from the two
+      # databases alone. The consumer checks below are a second opinion: anything
+      # they dislike publishes as a draft so the reviewer sees the change and the
+      # test update that goes with it.
+      needs_draft: ${{ steps.check.outputs.needs_draft }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: proposal
+          path: proposal
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Checkout tokdash at the proposal's commit
+        # Not `main`. Validating the proposed database against whatever main is
+        # now, rather than the commit it was derived from, tests a pairing that
+        # never existed.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.TOKDASH_REPO }}
+          path: tokdash
+          ref: ${{ needs.generate.outputs.base_sha }}
+          persist-credentials: false
+
+      - name: Install tokdash, the updater, and pytest
+        working-directory: tokdash
+        # Tokdash declares no [dev] extra, so `pip install -e .[dev]` warns,
+        # succeeds, and leaves pytest missing. Install what the checks need by
+        # name so a missing dependency is a red step rather than a green no-op.
+        # The updater is installed too because the checker doing the split is
+        # updater code, not something to reimplement in shell.
+        run: |
+          python -m pip install --quiet -e .
+          python -m pip install --quiet pytest
+          python -m pytest --version
+          python -m pip install --quiet -e ../
+
+      - name: Structural gate
+        # The gate has to stand on its own. One consumer test can assert both that
+        # an alias resolves and that a model costs 2.0, so its failure says
+        # "something is wrong" and not what; multiplying every price to sort the
+        # failures into two buckets cannot fix that either. This check needs no
+        # consumer opinion: shape, per-entry fields, aliases that resolve, nothing
+        # removed, no paid price turned free. A non-zero exit stops the job, so a
+        # malformed database never reaches a PR, draft or otherwise.
+        run: |
+          # A run that proposed nothing has no database to gate, and that is a
+          # clean outcome rather than a broken one; the publish job says so too.
+          if [ -f proposal/proposals/proposed_pricing_db.json ]; then
+            python -m pricing_updater.structural_check \
+              --proposed proposal/proposals/proposed_pricing_db.json \
+              --tokdash-repo tokdash \
+              --additions-only \
+              --json-out validation/structural_check.json
+          else
+            echo "Nothing was proposed, so there is nothing to gate."
+          fi
+
+      - name: Consumer checks as a second opinion
+        id: check
+        # The proposed database is swapped in and restored by the checker itself.
+        # It runs tokdash's checks three times: as they are, to see what was
+        # already red; with every price multiplied, to see which tests are
+        # sensitive to numbers; and against the proposal. New failures become a
+        # draft, and a run that could not produce structured results fails the job
+        # rather than reporting a green it did not earn.
+        run: |
+          python -m pricing_updater.consumer_checks \
+            --tokdash-repo tokdash \
+            --proposed proposal/proposals/proposed_pricing_db.json \
+            --json-out validation/consumer_checks.json \
+            --md-out validation/consumer_checks.md
+          # Read back rather than assume: if the report is missing or malformed
+          # this step fails, and a run that cannot say what it validated does not
+          # get to publish anything.
+          #
+          # The checker exits non-zero when pytest refused, aborted collection, or
+          # left a required check file with no records. It does not exit non-zero
+          # because a test disliked the proposal; that is the draft.
+          needs_draft="$(python -c 'import json; print(str(json.load(open("validation/consumer_checks.json"))["needs_draft"]).lower())')"
+          echo "needs_draft=$needs_draft" >> "$GITHUB_OUTPUT"
+          echo "consumer checks need_draft=$needs_draft"
+
+      # The checker itself emits the ::error:: annotation, for structural failures
+      # and for a checkout whose check files cannot be found. A second message from
+      # a step that also runs when an earlier one failed would only mislead.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: validation
+          path: validation
+          retention-days: 90
+
+  publish:
+    name: Publish the PR
+    needs: [generate, validate]
+    # A dry run stops here. The input was declared and never read, so once the
+    # token existed, selecting dry-run pushed and opened a PR anyway.
+    if: needs.validate.result == 'success' && inputs.dry_run != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check for a cross-repo token
+        id: gate
+        env:
+          BOT_TOKEN: ${{ secrets.PRICING_BOT_TOKEN }}
+        run: |
+          if [ -z "$BOT_TOKEN" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Publication disabled::PRICING_BOT_TOKEN is not set, so the proposal was generated and validated but not published. The updater's own GITHUB_TOKEN cannot write to another repository, and a PR opened with it may also wait on manual approval before tokdash CI runs. Configure a GitHub App installation token or a fine-grained PAT scoped to $TOKDASH_REPO with contents:write and pull-requests:write."
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A missing secret is a configuration state, so it skips with a warning
+      # rather than reddening every scheduled run. A token that is present and
+      # then fails to publish is a real failure and does exit non-zero.
+
+      - if: steps.gate.outputs.enabled == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - if: steps.gate.outputs.enabled == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: proposal
+          path: proposal
+
+      - if: steps.gate.outputs.enabled == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: validation
+          path: validation
+
+      - if: steps.gate.outputs.enabled == 'true'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - if: steps.gate.outputs.enabled == 'true'
+        name: Install the updater
+        run: python -m pip install --quiet -e .
+
+      - if: steps.gate.outputs.enabled == 'true'
+        name: Checkout tokdash with write access
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.TOKDASH_REPO }}
+          path: tokdash
+          # Checked out at the commit the proposal was built on. publish() still
+          # re-fetches and refuses if that is no longer the tip.
+          ref: ${{ needs.generate.outputs.base_sha }}
+          token: ${{ secrets.PRICING_BOT_TOKEN }}
+          persist-credentials: true
+
+      - if: steps.gate.outputs.enabled == 'true'
+        name: Configure committer
+        working-directory: tokdash
+        run: |
+          git config user.name "pricing-bot"
+          git config user.email "pricing-bot@users.noreply.github.com"
+
+      # Re-runs refresh the one open PR on the bot branch instead of stacking a
+      # second one, and the force push is leased against the bot branch as it was
+      # just fetched, so a runner that has never seen that branch can still do it.
+      - if: steps.gate.outputs.enabled == 'true'
+        name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.PRICING_BOT_TOKEN }}
+          BASE_SHA: ${{ needs.generate.outputs.base_sha }}
+          NEEDS_DRAFT: ${{ needs.validate.outputs.needs_draft }}
+          # Belt and braces with the job condition above: a dispatch that asked
+          # for a dry run cannot push even if the condition is edited away.
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          python - <<'PY'
+          import json, os, pathlib
+          from pricing_updater.github_pr import publish
+
+          proposed = pathlib.Path("proposal/proposals/proposed_pricing_db.json")
+          if not proposed.exists():
+              print("no proposed database; nothing to publish")
+              raise SystemExit(0)
+
+          # Title and draft state come from the run that built the diff, so a PR
+          # cannot disagree with the evidence inside it.
+          plan = json.loads(pathlib.Path("proposal/proposals/publish_plan.json").read_text())
+          body = pathlib.Path("proposal/proposals/pr_body.md")
+
+          # Two SHAs now exist on this side of the handoff: the pin the jobs were
+          # given, and the one the generator wrote into the plan. If they disagree,
+          # the artifact did not come from this run, and publishing an unknown
+          # proposal against an unknown base is exactly what the pin is for.
+          handoff = os.environ.get("BASE_SHA", "")
+          if not handoff:
+              print("::error::no base commit reached this job; refusing to publish")
+              raise SystemExit(1)
+          if plan.get("base_sha") != handoff:
+              print("::error::the proposal in this artifact was built against "
+                    f"{str(plan.get('base_sha'))[:7] or 'nothing'}, but this run pinned "
+                    f"{handoff[:7]}; refusing to publish a proposal from another run")
+              raise SystemExit(1)
+
+          body_text = body.read_text() if body.exists() else "See the run artifacts."
+          report = pathlib.Path("validation/consumer_checks.md")
+          if report.exists():
+              body_text += "\n" + report.read_text()
+
+          result = publish(
+              tokdash_repo=pathlib.Path("tokdash"),
+              proposed_db_path=proposed,
+              body=body_text,
+              title=plan["title"],
+              branch="bot/pricing-db",
+              base="main",
+              labels=["pricing", "automated"],
+              generated_at_sha=handoff,
+              # The generator's guards and the consumer checks both get a vote:
+              # either one alone is enough to hold the PR in draft.
+              draft=bool(plan.get("draft")) or os.environ.get("NEEDS_DRAFT") == "true",
+              dry_run=os.environ.get("DRY_RUN") == "true",
+          )
+          for warning in result.warnings:
+              print("warning:", warning)
+          if not result.ok:
+              print("::error::" + result.detail)
+              raise SystemExit(1)
+          print(result.action, result.pr_url or result.detail)
+          PY

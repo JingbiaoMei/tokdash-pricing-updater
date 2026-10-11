@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from .canonicalize import CanonicalModel
+from .sources.base import PRICE_ATTRS, clean_price
 
 
 def _decimal_to_float(d: Decimal) -> float:
@@ -21,6 +22,17 @@ def _decimal_to_float(d: Decimal) -> float:
 
 
 def _model_to_entry(m: CanonicalModel) -> dict:
+    # Last gate before the number becomes JSON. The guards drop models whose
+    # prices they can see are unusable, so reaching here with one means a bug
+    # upstream, and a silent -1 or NaN in pricing_db.json would cost someone
+    # real money before anyone noticed.
+    for name, attr in PRICE_ATTRS:
+        if clean_price(getattr(m, attr, None)) is None:
+            raise ValueError(
+                f"refusing to render {m.canonical_id!r}: {name} price "
+                f"{getattr(m, attr, None)!r} is not a finite non-negative number"
+            )
+
     entry: dict = OrderedDict()
     entry["provider"] = m.provider
     entry["input"] = _decimal_to_float(m.input_per_mtok)

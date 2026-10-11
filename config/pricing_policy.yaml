@@ -81,6 +81,9 @@ provider_order:
   - key: _comment_bytedance
     label: "=== ByteDance Models ==="
     providers: [bytedance]
+  - key: _comment_meituan
+    label: "=== Meituan Models ==="
+    providers: [meituan]
   - key: _comment_tencent
     label: "=== Tencent Models ==="
     providers: [tencent]
@@ -108,6 +111,18 @@ provider_order:
   - key: _comment_reka
     label: "=== Reka Models ==="
     providers: [reka]
+  - key: _comment_meta
+    label: "=== Meta Models ==="
+    providers: [meta]
+  - key: _comment_nvidia
+    label: "=== NVIDIA Models ==="
+    providers: [nvidia]
+  - key: _comment_microsoft
+    label: "=== Microsoft Models ==="
+    providers: [microsoft]
+  - key: _comment_amazon
+    label: "=== Amazon Models ==="
+    providers: [amazon]
   - key: _comment_antigravity
     label: "=== Antigravity Models (mapped to base model pricing) ==="
     providers: []  # derived_models only

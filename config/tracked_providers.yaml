@@ -1,5 +1,6 @@
 # OpenRouter provider slugs to track.
 # Only models from these providers are scraped.
+# Providers deliberately NOT tracked (and why): see config/untracked_providers.md
 providers:
   - slug: openai
     tokdash_provider: openai
@@ -23,6 +24,8 @@ providers:
     tokdash_provider: bytedance
   - slug: bytedance-seed
     tokdash_provider: bytedance
+  - slug: meituan
+    tokdash_provider: meituan
   - slug: tencent
     tokdash_provider: tencent
   - slug: x-ai
@@ -41,9 +44,20 @@ providers:
     tokdash_provider: ai21
   - slug: rekaai          # NB: OpenRouter author slug is "rekaai", not "reka"
     tokdash_provider: reka
+  - slug: meta-llama
+    tokdash_provider: meta
+  - slug: meta
+    tokdash_provider: meta
+  - slug: nvidia
+    tokdash_provider: nvidia
+  - slug: microsoft
+    tokdash_provider: microsoft
+  - slug: amazon
+    tokdash_provider: amazon
 
 # OpenRouter model ID patterns to skip even if provider matches.
 skip_patterns:
   - ":free$"
   - ":beta$"
   - ":extended$"
+  - ":batch$"

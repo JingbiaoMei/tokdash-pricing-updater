@@ -92,8 +92,13 @@ def _try_parse_table(html: str) -> list[ScrapedModel]:
             try:
                 input_price = Decimal(prices[0])
                 output_price = Decimal(prices[-1])
-                # Cache hit is typically listed between input and output or as 10% of input
-                cache_read = Decimal(prices[1]) if len(prices) >= 3 else input_price * Decimal("0.1")
+                # A cache price is only official when the page printed one. Filling
+                # the gap with 10% of input here put a made-up number in the column
+                # reserved for what DeepSeek actually published, and for a free
+                # model that made-up number was a 0 the overlay then defended as a
+                # published free-cache price. Leaving it None hands the field to
+                # apply_cache_fallback, which guesses openly and labels the guess.
+                cache_read = Decimal(prices[1]) if len(prices) >= 3 else None
 
                 results.append(ScrapedModel(
                     source_id=f"deepseek/{canonical_name}",
