@@ -583,6 +583,41 @@ to a GitHub App installation token or a fine-grained PAT with `contents: write` 
 default branch, can be delayed or coalesced, and are disabled after 60 days of repo
 inactivity, which is why `workflow_dispatch` is a first-class path.
 
+## What is not finished
+
+Honest state as of 2026-10-11, measured by running `auto --create-pr --dry-run`
+against the real tokdash checkout.
+
+1. **The guard thresholds currently silence the bot.** Today's run computed 90
+   changes and proposed none of them: 44 tripped `max_changes_per_run=25`, which
+   holds the whole set, and 46 models tripped the 50% single-field guard. On these
+   settings a scheduled run is green and publishes nothing. Either the shipped
+   `pricing_db.json` gets one manual rebalance first, or the thresholds get
+   retuned. Deciding that is a policy call, not a bug.
+2. **Source precedence is undecided (issue #202, D1).** The overlay takes the
+   larger of OpenRouter and the official page per field, so a model can end up
+   with fields from both sources and an aggregator price can beat the provider's
+   own page. Nothing here pretends that is settled; the tests pin today's
+   behaviour, not a ratified rule.
+3. **Coverage is narrower than it looks.** Of 364 keys, 190 are movable by the
+   bot, 71 were not discovered by the scraper at all and 13 are protected manual
+   or derived entries. Official-only models and protected entries never receive a
+   repricing proposal, so a price change on one of them still needs a human.
+4. **Three of six official adapters are not answering.** The last run recorded
+   DeepSeek parsing nothing and Moonshot and Xiaomi returning nothing, so those
+   numbers came from `config/official_prices.yaml`. The run says so in
+   `source_health_*.json` and in the PR body now, which is the fix for the
+   invisibility; the adapters themselves still need work.
+5. **No dependency lock.** CI resolves `httpx` and `pyyaml` from unpinned ranges
+   on every run. `uv.lock` is gitignored, so nothing pins a transitive version.
+6. **No watch-issue automation.** Held findings, unresolved evidence and scraper
+   failures are reported in the PR body and in `output/proposals/`, and a run with
+   nothing proposable leaves no trace on GitHub beyond its artifacts. Opening an
+   issue for those is not built.
+7. **Publication is inert until a token exists.** `PRICING_BOT_TOKEN` must be a
+   credential authorized on the tokdash repo; without it the publish step skips
+   with a warning by design.
+
 ## Design decisions
 
 | Decision | Rationale |
