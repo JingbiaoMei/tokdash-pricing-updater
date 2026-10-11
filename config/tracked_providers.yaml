@@ -60,3 +60,4 @@ skip_patterns:
   - ":free$"
   - ":beta$"
   - ":extended$"
+  - ":batch$"

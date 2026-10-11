@@ -25,6 +25,7 @@ def fetch_all_official(timeout: int = 30) -> dict[str, dict]:
         ("MiniMax", _fetch_minimax),
         ("Moonshot/Kimi", _fetch_moonshot),
         ("Xiaomi/MiMo", _fetch_xiaomi),
+        ("StepFun", _fetch_stepfun),
     ]
 
     for name, fetcher in adapters:
@@ -76,3 +77,8 @@ def _fetch_moonshot(timeout: int) -> dict[str, dict]:
 def _fetch_xiaomi(timeout: int) -> dict[str, dict]:
     from .official_xiaomi import fetch_xiaomi_official
     return fetch_xiaomi_official(timeout)
+
+
+def _fetch_stepfun(timeout: int) -> dict[str, dict]:
+    from .official_stepfun import fetch_stepfun_official
+    return fetch_stepfun_official(timeout)

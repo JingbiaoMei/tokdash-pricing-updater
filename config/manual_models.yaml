@@ -41,3 +41,17 @@ models:
     unit: per_million_tokens
     source: platform.minimax.io/docs/guides/pricing-paygo
     note: "Official standard PAYG (<=512K ctx). 7-day launch 50% off (~till 2026-06-07) billed 0.3/1.2 — matches back-derived minimax-cn logs."
+
+  # StepFun's frontier model — not listed on OpenRouter, so the overlay in
+  # official_stepfun.py has no scraped entry to attach to. Pinned here from
+  # the official USD page. Remove if OpenRouter ever lists it (the scraper
+  # will then track price changes automatically). cache_write = input
+  # (StepFun publishes no separate cache-write fee).
+  step-5-preview:
+    provider: stepfun
+    input: 1.0
+    output: 2.7
+    cache_read: 0.05
+    cache_write: 1.0
+    unit: per_million_tokens
+    source: platform.stepfun.ai/docs/en/guides/pricing/details
