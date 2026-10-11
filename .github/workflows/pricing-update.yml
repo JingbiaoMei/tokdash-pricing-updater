@@ -33,6 +33,11 @@ jobs:
     name: Generate proposal
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      # Every later job works against this commit. Three independent checkouts of
+      # a moving branch is how a proposal generated against one database ends up
+      # published on top of a newer one.
+      base_sha: ${{ steps.pin.outputs.base_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -42,10 +47,12 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install httpx pyyaml pytest
+      - name: Install the updater
+        # An editable install of this repo, not a list of its dependencies. The
+        # bare `pip install httpx pyyaml` left the package itself unimportable,
+        # so `python -m pricing_updater` died with "No module named
+        # pricing_updater" on a clean runner.
+        run: python -m pip install --quiet -e .
 
       - name: Checkout tokdash at main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -56,7 +63,9 @@ jobs:
 
       - name: Generate
         # --dry-run: the branch move and PR belong to the publish job, after
-        # validation. Here we only produce the proposal and its evidence.
+        # validation. Here we only produce the proposal and its evidence. The
+        # CLI fetches the base itself, reads the database at that commit rather
+        # than off disk, and writes output/proposals/base_sha.txt.
         run: |
           # Without pipefail a failing generator would report tee's status and
           # the job would pass while producing nothing.
@@ -64,10 +73,22 @@ jobs:
           python -m pricing_updater --tokdash-repo tokdash auto \
             --create-pr --dry-run --branch "$BOT_BRANCH" 2>&1 | tee generate.log
 
+      - name: Pin the base commit
+        id: pin
+        # The SHA the proposal was actually computed against, read back from the
+        # artifact rather than guessed from the ref.
+        run: |
+          sha="$(cat output/proposals/base_sha.txt)"
+          test -n "$sha" || { echo "::error::no base_sha.txt; cannot pin validation to a commit"; exit 1; }
+          echo "base_sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Proposal is pinned to tokdash $sha"
+
       - name: Summarize
         run: |
           {
             echo "## Run summary"
+            echo
+            echo "Base: \`${{ steps.pin.outputs.base_sha }}\`"
             echo
             tail -n 40 generate.log | sed 's/^/    /'
           } >> "$GITHUB_STEP_SUMMARY"
@@ -83,6 +104,7 @@ jobs:
   validate:
     name: Validate against tokdash checks
     needs: generate
+    if: needs.generate.outputs.base_sha != ''
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -90,7 +112,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8b5a5461e7c # v8.0.1
         with:
           name: proposal
           path: proposal
@@ -99,16 +121,26 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Checkout tokdash at main
+      - name: Checkout tokdash at the proposal's commit
+        # Not `main`. Validating the proposed database against whatever main is
+        # now, rather than the commit it was derived from, tests a pairing that
+        # never existed.
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.TOKDASH_REPO }}
           path: tokdash
+          ref: ${{ needs.generate.outputs.base_sha }}
           persist-credentials: false
 
-      - name: Install tokdash
+      - name: Install tokdash and pytest
         working-directory: tokdash
-        run: python -m pip install --quiet -e ".[dev]" || python -m pip install --quiet -e . pytest
+        # Tokdash declares no [dev] extra, so `pip install -e .[dev]` warns,
+        # succeeds, and leaves pytest missing. Install what the checks need by
+        # name so a missing dependency is a red step rather than a green no-op.
+        run: |
+          python -m pip install --quiet -e .
+          python -m pip install --quiet pytest
+          python -m pytest --version
 
       - name: Apply the proposed database
         run: |
@@ -134,7 +166,9 @@ jobs:
   publish:
     name: Publish the PR
     needs: [generate, validate]
-    if: needs.validate.result == 'success'
+    # A dry run stops here. The input was declared and never read, so once the
+    # token existed, selecting dry-run pushed and opened a PR anyway.
+    if: needs.validate.result == 'success' && inputs.dry_run != true
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -151,7 +185,7 @@ jobs:
           fi
 
       # A missing secret is a configuration state, so it skips with a warning
-      # rather than reddening every scheduled run. A secret that is present and
+      # rather than reddening every scheduled run. A token that is present and
       # then fails to publish is a real failure and does exit non-zero.
 
       - if: steps.gate.outputs.enabled == 'true'
@@ -160,7 +194,7 @@ jobs:
           persist-credentials: false
 
       - if: steps.gate.outputs.enabled == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8b5a5461e7c # v8.0.1
         with:
           name: proposal
           path: proposal
@@ -171,10 +205,8 @@ jobs:
           python-version: "3.12"
 
       - if: steps.gate.outputs.enabled == 'true'
-        name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install httpx pyyaml
+        name: Install the updater
+        run: python -m pip install --quiet -e .
 
       - if: steps.gate.outputs.enabled == 'true'
         name: Checkout tokdash with write access
@@ -182,6 +214,9 @@ jobs:
         with:
           repository: ${{ env.TOKDASH_REPO }}
           path: tokdash
+          # Checked out at the commit the proposal was built on. publish() still
+          # re-fetches and refuses if that is no longer the tip.
+          ref: ${{ needs.generate.outputs.base_sha }}
           token: ${{ secrets.PRICING_BOT_TOKEN }}
           persist-credentials: true
 
@@ -193,16 +228,19 @@ jobs:
           git config user.email "pricing-bot@users.noreply.github.com"
 
       # Re-runs refresh the one open PR on the bot branch instead of stacking a
-      # second one. A stale proposal can never be published: publish re-fetches
-      # the base and refuses a diff wider than the pricing DB.
+      # second one, and the force push is leased against the bot branch as it was
+      # just fetched, so a runner that has never seen that branch can still do it.
       - if: steps.gate.outputs.enabled == 'true'
         name: Publish
         env:
           GH_TOKEN: ${{ secrets.PRICING_BOT_TOKEN }}
+          BASE_SHA: ${{ needs.generate.outputs.base_sha }}
+          # Belt and braces with the job condition above: a dispatch that asked
+          # for a dry run cannot push even if the condition is edited away.
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           python - <<'PY'
-          import pathlib, shutil, sys
-          sys.path.insert(0, "src")
+          import os, pathlib, sys
           from pricing_updater.github_pr import publish
 
           body = pathlib.Path("proposal/proposals/pr_body.md")
@@ -219,6 +257,8 @@ jobs:
               branch="bot/pricing-db",
               base="main",
               labels=["pricing", "automated"],
+              generated_at_sha=os.environ["BASE_SHA"],
+              dry_run=os.environ.get("DRY_RUN") == "true",
           )
           for warning in result.warnings:
               print("warning:", warning)

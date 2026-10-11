@@ -190,10 +190,15 @@ cp output/proposals/proposed_pricing_db.json ../tokdash/src/tokdash/pricing_db.j
 
 ### `auto`
 
-CI mode. Scrapes, diffs, applies the guard policy in `config/anomaly_policy.yaml`,
-then publishes one PR. Everything the guards accept goes into the PR diff, new
-models and repricings alike, so reviewing the diff and merging is the whole job.
-Anything a guard distrusts is held out of the diff and named in the PR body.
+CI mode. With `--create-pr` it fetches the base branch first and reads
+`pricing_db.json` as of that commit, so the proposal is built against what is
+actually published rather than against whatever the working tree happens to hold.
+It then scrapes, diffs, applies the guard policy in
+`config/anomaly_policy.yaml`, and publishes one PR. Everything the guards accept
+goes into the PR diff, new models and repricings alike, so reviewing the diff and
+merging is the whole job. Anything a guard distrusts is held out of the diff and
+named in the PR body. A run whose guard findings point at the source rather than
+at one price opens as a draft.
 
 ```bash
 # Generate the proposal and its evidence, publish nothing.
@@ -208,8 +213,13 @@ python -m pricing_updater --tokdash-repo ../tokdash auto --create-pr \
 ```
 
 Publication failure exits non-zero, so a run that could not open its PR does not
-look green. Artifacts land in `output/proposals/`: the proposed database, the diff
-report, `coverage_*.json`, `provenance_*.json` and the rendered `pr_body.md`.
+look green. `--dry-run` changes nothing at all, including the checked-out branch.
+
+Artifacts land in `output/proposals/`: the proposed database, the diff report,
+`coverage_*.json`, `provenance_*.json`, `source_health_*.json` (which official
+adapters answered and which fell back to YAML), `base_sha.txt` (the commit the
+proposal was computed against, which publication refuses to move away from) and
+the rendered `pr_body.md`.
 
 ## Config reference
 
@@ -559,7 +569,11 @@ Two workflows live in `.github/workflows/`:
   gitignored `output/`.
 - `pricing-update.yml` runs Tuesday and Thursday, plus on demand, as three jobs:
   **generate**, **validate** (tokdash's own pricing checks run against the proposed
-  database before anything is pushed), and **publish**.
+  database before anything is pushed), and **publish**. All three work on one base
+  commit: generate records the SHA it read, and validate and publish check that SHA
+  out rather than a `main` that may have moved since. `publish` re-fetches and
+  refuses outright if the base has moved by then.
+  The `dry_run` dispatch input stops the run after validation and publishes nothing.
 
 Publishing needs a credential that is authorized on the tokdash repo. The updater's
 own `GITHUB_TOKEN` cannot write to another repository, so set `PRICING_BOT_TOKEN`
@@ -573,11 +587,15 @@ inactivity, which is why `workflow_dispatch` is a first-class path.
 | Decision | Rationale |
 |----------|-----------|
 | Separate repo | Scraping, third-party-site adapters and guard policy belong to a generator, not to a consumer package. Tokdash ships only `pricing_db.json`. This repo commits no credentials; the publication token lives in CI secrets. |
-| Dual-source: OpenRouter + official sites | OpenRouter provides broad coverage (124 models, 8 providers) in one call. Official adapters (Z.ai, MiniMax, DeepSeek live; Moonshot, Xiaomi YAML fallback) provide authoritative first-party prices. `max(openrouter, official)` per field ensures conservative cost tracking. |
+| Dual-source: OpenRouter + official sites | OpenRouter provides broad coverage in one call. Official adapters (Z.ai, MiniMax, DeepSeek, StepFun live; Moonshot, Xiaomi YAML fallback) provide authoritative first-party prices. Per field, the official value wins when it is larger or when the scrape never settled the field. Whether official should simply win whenever both sources have a number is an open policy question (issue #202); today's `max()` is the status quo, not a ratified rule. |
+| Publish only against a pinned commit | The base is fetched and read before generation, and publication is refused once that commit is no longer the tip. A changed-files guard cannot catch this: the stale content sits inside the one file this bot is allowed to touch, so publishing it would silently revert a merged edit. |
+| Lease the force push against an observed commit | The bot branch is fetched and its SHA named in `--force-with-lease`, because a fresh CI clone has no tracking ref for it and git refuses the push otherwise with "stale info". |
+| Reject prices that cannot be prices | Negative, NaN, infinite and unparseable rates never become a number. Guards ask whether a field is missing, so a value that merely parses looks valid, and the renderer is the last gate before JSON. |
 | FX normalization | Official prices may be in CNY or USD. `config/fx_rates.yaml` holds the exchange rate; `policy.py` converts to USD before the max() comparison. Currently all tracked providers have USD pricing pages, but the machinery is ready for CNY sources. |
 | Family mapping | Official providers list fewer model IDs than OpenRouter (e.g. DeepSeek lists 2, OpenRouter lists 11). `config/official_family_map.yaml` maps versioned variants to their official pricing family via glob patterns. |
 | YAML fallback for SPA pages | Moonshot and Xiaomi official pages are JavaScript SPAs that don't serve pricing in initial HTML. Live adapters attempt to fetch them each run (will start working if SSR is added); YAML config provides the fallback. |
 | Decimal arithmetic | OpenRouter returns per-token prices as strings (`"0.000005"`). Parsing with `Decimal` avoids floating-point drift during the `* 1,000,000` conversion to per-MTok. |
+| Official 0 is data, not a gap | A provider that publishes a free cache read means it. The overlay settles the field and leaves it flagged, so the cache heuristic never stamps a guessed factor over a real zero. |
 | Manual/derived/alias configs | These represent tokdash's compatibility surface, not scraped data. Keeping them in YAML config files means the scraper can never accidentally remove or overwrite them. |
 | Staleness gating (last_seen) | A model disappearing from one scrape could be a transient API issue. Requiring 4+ consecutive misses before even flagging prevents false removal proposals. |
 | `manual_only` classification | Deletions are never auto-applied, not even in CI mode. A human must review and edit config files. |
