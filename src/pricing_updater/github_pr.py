@@ -328,26 +328,31 @@ def _find_open_pr(slug: str, branch: str, cwd: Path, run) -> dict | None:
 def _reconcile_draft(slug, open_pr, draft, cwd, run) -> list[str]:
     """Match the PR's draft state to what this run's guards think.
 
-    A draft that never leaves draft is a silent stall, so a clean rerun marks it
-    ready. The reverse is impossible: gh has no way to put an open PR back into
-    draft, so an anomalous rerun over a PR already marked ready says so in the
-    warnings and leaves the judgement to the reviewer.
+    Both directions are real transitions. A draft that never leaves draft is a
+    silent stall, so a clean rerun marks it ready with `gh pr ready`. The reverse
+    matters just as much: when a rerun trips a guard, `gh pr ready --undo` puts an
+    open PR back into draft, so a proposal this run no longer trusts stops being
+    one careless merge away from main. Only a failed transition is a warning.
     """
     number = open_pr["number"]
     is_draft = bool(open_pr.get("isDraft"))
-    if draft:
-        if is_draft:
-            return []
-        return [
-            f"this run tripped a structural guard, but PR #{number} is already open for "
-            "review and cannot be put back into draft; check it before merging"
-        ]
-    if not is_draft:
+    if draft == is_draft:
         return []
-    proc = run(["gh", "pr", "ready", str(number), "--repo", slug], cwd)
-    if proc.returncode != 0:
-        return [f"could not mark PR #{number} ready: {proc.stderr.strip()}"]
-    return []
+
+    cmd = ["gh", "pr", "ready", str(number), "--repo", slug]
+    if draft:
+        cmd.append("--undo")
+    proc = run(cmd, cwd)
+    if proc.returncode == 0:
+        return []
+    if draft:
+        # Plans that do not support drafts refuse this call, so the warning has
+        # to carry the judgement the transition would otherwise have made.
+        return [
+            f"this run tripped a structural guard and could not return PR #{number} to "
+            f"draft ({proc.stderr.strip()}); treat it as anomalous and check it before merging"
+        ]
+    return [f"could not mark PR #{number} ready: {proc.stderr.strip()}"]
 
 
 def _apply_labels(slug, number, labels, cwd, run) -> list[str]:

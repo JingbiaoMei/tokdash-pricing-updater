@@ -174,14 +174,30 @@ def test_an_anomalous_rerun_leaves_a_draft_alone(repo, proposed):
     assert not run.ran("pr ready")
 
 
-def test_an_anomalous_rerun_says_so_when_the_pr_is_already_open(repo, proposed):
-    """gh cannot put a PR back into draft, so the warning is all the bot can do."""
+def test_an_anomalous_rerun_returns_an_open_pr_to_draft(repo, proposed):
+    """A proposal this run no longer trusts must not sit one merge away from main.
+
+    `gh pr ready --undo` does the conversion, so the bot uses it rather than
+    warning and leaving a ready PR in place.
+    """
     run = Runner({"diff --cached": DB_REL + "\n", "pr list": OPEN_READY})
 
     result = _pub(repo, proposed, run, draft=True)
 
+    assert result.ok, result.detail
+    assert not result.warnings
+    assert run.ran("pr ready 4 --repo JingbiaoMei/Tokdash --undo")
+
+
+def test_a_failed_draft_conversion_says_so(repo, proposed):
+    """Plans without drafts refuse the call; that has to be loud, not silent."""
+    run = Runner({"diff --cached": DB_REL + "\n", "pr list": OPEN_READY},
+                 failures=("pr ready 4",))
+
+    result = _pub(repo, proposed, run, draft=True)
+
     assert result.ok
-    assert any("cannot be put back into draft" in w for w in result.warnings)
+    assert any("could not return PR #4 to draft" in w for w in result.warnings)
 
 
 def test_anomalous_first_run_opens_a_draft(repo, proposed):
