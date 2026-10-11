@@ -9,9 +9,9 @@
 #   - family:  "deepseek-chat"  → key into official_prices.yaml
 
 families:
-  # DeepSeek: official page lists deepseek-chat and deepseek-reasoner only.
-  # All chat/v3 variants share deepseek-chat pricing.
-  # All reasoning variants share deepseek-r1 pricing.
+  # Historical chat/v3 and R1 variants use the configured pricing families.
+  # Current DeepSeek model IDs and explicitly listed aliases match live prices
+  # directly; do not map every historical variant to today's Flash/Pro tariff.
   - pattern: "deepseek-chat-*"
     family: deepseek-chat
   - pattern: "deepseek-v3*"

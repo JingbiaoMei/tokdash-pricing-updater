@@ -1,117 +1,101 @@
-"""Scrape official DeepSeek pricing from api-docs.deepseek.com.
+"""Read DeepSeek's model columns and labelled USD-per-million price rows.
 
-DeepSeek publishes pricing in USD at a stable English-language URL.
-Returns ScrapedModel entries that get merged into official_prices at runtime.
+Use published peak rates for the database's single tariff. Historical model
+names receive live prices only if the current page explicitly lists them.
 """
-
 from __future__ import annotations
 
 import re
-from decimal import Decimal, InvalidOperation
+from dataclasses import replace
 
 import httpx
 
+from ._pricing_tables import html_tables, plain, usd_price
 from .base import ScrapedModel
 
-DEEPSEEK_PRICING_URL = "https://api-docs.deepseek.com/quick_start/pricing"
-
-
-def _parse_price(text: str) -> Decimal | None:
-    """Extract a dollar amount like '$0.28' from text."""
-    m = re.search(r"\$?([\d.]+)", text)
-    if m:
-        try:
-            return Decimal(m.group(1))
-        except InvalidOperation:
-            pass
-    return None
+DEEPSEEK_PRICING_URL = "https://api-docs.deepseek.com/quick_start/pricing/"
+_MODEL = re.compile(r"deepseek-[a-z0-9][a-z0-9.-]*", re.I)
 
 
 def fetch_deepseek_official(timeout: int = 30) -> list[ScrapedModel]:
-    """Fetch and parse the DeepSeek pricing page.
-
-    Returns ScrapedModel entries with source_name='deepseek_official'.
-    Prices are in USD per MTok.
-    """
     try:
-        resp = httpx.get(DEEPSEEK_PRICING_URL, timeout=timeout, follow_redirects=True)
-        resp.raise_for_status()
-    except httpx.HTTPError as e:
-        print(f"  WARNING: Could not fetch DeepSeek pricing: {e}")
+        response = httpx.get(DEEPSEEK_PRICING_URL, timeout=timeout, follow_redirects=True)
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        print(f"  WARNING: Could not fetch DeepSeek pricing: {exc}")
         return []
-
-    html = resp.text
-    models: list[ScrapedModel] = []
-
-    # The DeepSeek pricing page lists models in a table.
-    # Look for patterns like "deepseek-chat" with prices "$0.28 per 1M tokens"
-    # or structured as rows with model name and price columns.
-    #
-    # Known models from the page (as of 2026-03):
-    #   deepseek-chat:     input $0.28/MTok, output $0.42/MTok, cache hit $0.028/MTok
-    #   deepseek-reasoner: input $0.28/MTok, output $0.42/MTok, cache hit $0.028/MTok
-
-    # Try to extract from markdown/HTML table rows.
-    # Fall back to known values if parsing fails.
-    parsed = _try_parse_table(html)
-    if parsed:
-        return parsed
-
-    # Fallback: return nothing and let config/official_prices.yaml handle it.
-    print("  WARNING: Could not parse DeepSeek pricing table, using config fallback")
-    return []
+    result = _try_parse_table(response.text)
+    if not result:
+        print("  WARNING: Could not parse DeepSeek pricing table, using config fallback")
+    return result
 
 
 def _try_parse_table(html: str) -> list[ScrapedModel]:
-    """Best-effort parse of the pricing table from HTML/markdown content."""
-    results = []
-
-    # Look for model names we know about
-    model_patterns = {
-        "deepseek-chat": "deepseek-chat",
-        "deepseek-reasoner": "deepseek-r1",
-    }
-
-    for page_name, canonical_name in model_patterns.items():
-        if page_name not in html.lower():
+    results: dict[str, ScrapedModel] = {}
+    for table in html_tables(html):
+        columns = {}
+        for row in table:
+            if row and plain(row[0]).lower() == "model":
+                columns = {i: [cell.lower()] for i, cell in enumerate(row)
+                           if _MODEL.fullmatch(cell)}
+                break
+        if not columns:
             continue
-
-        # Extract prices near the model name.
-        # Look for dollar amounts in nearby context.
-        idx = html.lower().find(page_name)
-        if idx < 0:
-            continue
-        context = html[max(0, idx - 200):idx + 500]
-
-        prices = re.findall(r"\$?([\d.]+)\s*(?:per\s+1M|/\s*1M|per\s+million)", context, re.I)
-        if not prices:
-            # Try simpler pattern: just dollar amounts
-            prices = re.findall(r"\$([\d.]+)", context)
-
-        if len(prices) >= 2:
-            try:
-                input_price = Decimal(prices[0])
-                output_price = Decimal(prices[-1])
-                # A cache price is only official when the page printed one. Filling
-                # the gap with 10% of input here put a made-up number in the column
-                # reserved for what DeepSeek actually published, and for a free
-                # model that made-up number was a 0 the overlay then defended as a
-                # published free-cache price. Leaving it None hands the field to
-                # apply_cache_fallback, which guesses openly and labels the guess.
-                cache_read = Decimal(prices[1]) if len(prices) >= 3 else None
-
-                results.append(ScrapedModel(
-                    source_id=f"deepseek/{canonical_name}",
-                    provider_slug="deepseek",
-                    short_id=canonical_name,
-                    input_per_mtok=input_price,
-                    output_per_mtok=output_price,
-                    cache_read_per_mtok=cache_read,
-                    cache_write_per_mtok=input_price,  # cache miss = input price
-                    source_name="deepseek_official",
-                    source_url=DEEPSEEK_PRICING_URL,
-                ))
-            except InvalidOperation:
+        rates = {column: {} for column in columns}
+        for row in table:
+            label = plain(" ".join(row[:min(columns)])).lower()
+            if label.startswith("model version"):
+                for column in columns:
+                    if column < len(row) and _MODEL.fullmatch(row[column]):
+                        columns[column].append(row[column].lower())
                 continue
-
-    return results
+            if "input" in label and "cache hit" in label:
+                field = "cache_read"
+            elif "input" in label and "cache write" in label:
+                field = "cache_write"
+            elif "input" in label and ("cache miss" in label or "cache" not in label):
+                field = "input"
+            elif "output" in label and "max" not in label:
+                field = "output"
+            else:
+                continue
+            if not re.search(r"\b1\s*M\b|\bmillion\b", label, re.I):
+                continue
+            tier = "off-peak" if "off-peak" in label or "off peak" in label else (
+                "peak" if re.search(r"\bpeak\b", label) else "standard"
+            )
+            for column in columns:
+                value = usd_price(row[column]) if column < len(row) else None
+                rates[column].setdefault(field, {}).setdefault(tier, []).append(value)
+        for column, names in columns.items():
+            prices = {}
+            for field, tiers in rates[column].items():
+                # An invalid peak must not silently become a discounted rate.
+                values = tiers.get("peak", tiers.get("standard", []))
+                if values and all(value is not None for value in values):
+                    prices[field] = max(values)
+            if "input" not in prices or "output" not in prices:
+                continue
+            for name in names:
+                canonical = "deepseek-r1" if name == "deepseek-reasoner" else name
+                results[canonical] = ScrapedModel(
+                    source_id=f"deepseek/{canonical}", provider_slug="deepseek",
+                    short_id=canonical, input_per_mtok=prices["input"],
+                    output_per_mtok=prices["output"],
+                    cache_read_per_mtok=prices.get("cache_read"),
+                    cache_write_per_mtok=prices.get("cache_write"),
+                    source_name="deepseek_official", source_url=DEEPSEEK_PRICING_URL,
+                )
+    # The current page explicitly says these legacy API names are still billed
+    # at the Flash rate. Do not extend that statement to historical v3/R1 models.
+    text = plain(re.sub(r"<[^>]+>", " ", html))
+    aliases = re.search(
+        r"The legacy names (deepseek-[a-z0-9.-]+) and (deepseek-[a-z0-9.-]+) "
+        r"are still accepted.*?billed at the Flash price", text, re.I,
+    )
+    if aliases and "deepseek-flash" in results:
+        for alias in aliases.groups():
+            name = alias.lower()
+            results[name] = replace(results["deepseek-flash"],
+                                    source_id=f"deepseek/{name}", short_id=name)
+    return list(results.values())

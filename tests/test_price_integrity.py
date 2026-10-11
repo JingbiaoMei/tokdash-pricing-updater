@@ -265,8 +265,16 @@ def test_renderer_refuses_to_write_an_unusable_price():
 
 
 def _deepseek_page(prices: str) -> str:
-    """A pricing page shaped like the one the parser was written against."""
-    return f"<html>deepseek-chat {prices}</html>"
+    """Keep the zero/missing regressions on DeepSeek's labelled table layout."""
+    import re
+
+    amounts = re.findall(r"\$[\d.]+", prices)
+    cache = (f"<tr><td>1M INPUT TOKENS (CACHE HIT)</td><td>{amounts[1]}</td></tr>"
+             if len(amounts) == 3 else "")
+    return ("<table><tr><td>MODEL</td><td>deepseek-chat</td></tr>"
+            f"<tr><td>1M INPUT TOKENS (CACHE MISS)</td><td>{amounts[0]}</td></tr>"
+            + cache
+            + f"<tr><td>1M OUTPUT TOKENS</td><td>{amounts[-1]}</td></tr></table>")
 
 
 def _deepseek_fetched(monkeypatch, html):
