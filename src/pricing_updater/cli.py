@@ -403,6 +403,7 @@ def cmd_propose(args):
 
     # Re-render with only approved changes applied to current DB.
     final_db = _apply_approved(current_db, proposed_db, approved)
+    _structural_gate(final_db, current_db)
     out_path = output_dir / "proposals" / "proposed_pricing_db.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -411,6 +412,30 @@ def cmd_propose(args):
     print(f"\nWrote {out_path}")
     print(f"Version: {final_db.get('version')}")
     print(f"\nTo apply: cp {out_path} {args.tokdash_repo}/src/tokdash/pricing_db.json")
+
+
+def _structural_gate(final_db: dict, current_db: dict) -> None:
+    """Stop a malformed database from becoming an artifact, a PR, or a hand copy.
+
+    The gate belongs to the validate job, but that job is not the only way this
+    code reaches the other repository: `diff` writes the file a person copies with
+    cp, and `auto --create-pr` publishes from this process. Checking the assembled
+    database rather than the rendered one keeps a change a guard already held from
+    blocking a proposal that never intended to make it.
+    """
+    from . import structural_check
+
+    findings = structural_check.check(final_db, current_db)
+    if not findings:
+        return
+    for finding in findings[:8]:
+        print(f"BLOCKED: {finding}", file=sys.stderr)
+    if len(findings) > 8:
+        print(f"BLOCKED: ... and {len(findings) - 8} more", file=sys.stderr)
+    print(f"BLOCKED: the database that was about to be written has "
+          f"{len(findings)} structural problem(s). Nothing was written.",
+          file=sys.stderr)
+    sys.exit(1)
 
 
 def cmd_auto(args):
@@ -549,6 +574,7 @@ def cmd_auto(args):
         return
 
     final_db = _apply_approved(current_db, proposed_db, proposable)
+    _structural_gate(final_db, current_db)
     out_path = output_dir / "proposals" / "proposed_pricing_db.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(dump_json(final_db))

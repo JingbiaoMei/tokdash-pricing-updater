@@ -67,10 +67,14 @@ def workspace(tmp_path, monkeypatch):
         "aliases": aliases,
         "models": {
             "_comment_openai": "=== OpenAI Models ===",
+            # Shaped like a real entry, unit included: the structural gate judges
+            # the assembled database, and all 364 shipped models carry a unit.
             "unit-test-alpha": {"provider": "openai", "input": 1.0, "output": 2.0,
-                                 "cache_read": 0.5, "cache_write": 1.0},
+                                 "cache_read": 0.5, "cache_write": 1.0,
+                                 "unit": "per_million_tokens"},
             "unit-test-gamma": {"provider": "openai", "input": 1.0, "output": 2.0,
-                                 "cache_read": 0.5, "cache_write": 1.0},
+                                 "cache_read": 0.5, "cache_write": 1.0,
+                                 "unit": "per_million_tokens"},
         },
     }, indent=2))
     _git(repo, "init", "-b", "main")
@@ -188,6 +192,29 @@ def test_publication_failure_fails_the_run(workspace, monkeypatch):
         cli.cmd_auto(_args(workspace))
 
     assert exc.value.code == 1
+
+
+def test_a_malformed_database_never_reaches_a_pr(workspace, recorder, monkeypatch, capsys):
+    """Publication is gated on the database being well-formed, not only on the guards.
+
+    The gate belongs to the validate job, but `auto --create-pr` publishes from this
+    process, so the same rules have to hold here or the workflow is the only door.
+    """
+    real = cli._apply_approved
+
+    def approved_but_deleting(current_db, proposed_db, approved):
+        final = real(current_db, proposed_db, approved)
+        del final["models"]["unit-test-gamma"]
+        return final
+
+    monkeypatch.setattr(cli, "_apply_approved", approved_but_deleting)
+
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_auto(_args(workspace))
+
+    assert exc.value.code == 1
+    assert recorder == [], "a database that lost a model must not be published"
+    assert "not in the proposal" in capsys.readouterr().err
 
 
 def test_nothing_proposable_is_a_clean_no_op(workspace, recorder, monkeypatch):
