@@ -58,6 +58,9 @@ jobs:
         # --dry-run: the branch move and PR belong to the publish job, after
         # validation. Here we only produce the proposal and its evidence.
         run: |
+          # Without pipefail a failing generator would report tee's status and
+          # the job would pass while producing nothing.
+          set -o pipefail
           python -m pricing_updater --tokdash-repo tokdash auto \
             --create-pr --dry-run --branch "$BOT_BRANCH" 2>&1 | tee generate.log
 
