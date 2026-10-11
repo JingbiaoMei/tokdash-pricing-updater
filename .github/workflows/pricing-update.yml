@@ -116,9 +116,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
-      # A price-expectation failure is not a malformed database, and a bot that
-      # cannot propose a repricing has nothing to propose. Those failures publish
-      # as a draft instead of blocking; structural ones never publish at all.
+      # Publication is gated by structural_check, which decides from the two
+      # databases alone. The consumer checks below are a second opinion: anything
+      # they dislike publishes as a draft so the reviewer sees the change and the
+      # test update that goes with it.
       needs_draft: ${{ steps.check.outputs.needs_draft }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -158,12 +159,34 @@ jobs:
           python -m pytest --version
           python -m pip install --quiet -e ../
 
-      - name: Consumer checks, structural and price-expectation
+      - name: Structural gate
+        # The gate has to stand on its own. One consumer test can assert both that
+        # an alias resolves and that a model costs 2.0, so its failure says
+        # "something is wrong" and not what; multiplying every price to sort the
+        # failures into two buckets cannot fix that either. This check needs no
+        # consumer opinion: shape, per-entry fields, aliases that resolve, nothing
+        # removed, no paid price turned free. A non-zero exit stops the job, so a
+        # malformed database never reaches a PR, draft or otherwise.
+        run: |
+          # A run that proposed nothing has no database to gate, and that is a
+          # clean outcome rather than a broken one; the publish job says so too.
+          if [ -f proposal/proposals/proposed_pricing_db.json ]; then
+            python -m pricing_updater.structural_check \
+              --proposed proposal/proposals/proposed_pricing_db.json \
+              --tokdash-repo tokdash \
+              --json-out validation/structural_check.json
+          else
+            echo "Nothing was proposed, so there is nothing to gate."
+          fi
+
+      - name: Consumer checks as a second opinion
         id: check
         # The proposed database is swapped in and restored by the checker itself.
-        # It runs tokdash's checks twice, once against the current database with
-        # every price multiplied, and separates the failures that only a price move
-        # explains from the ones a repricing must never cause.
+        # It runs tokdash's checks three times: as they are, to see what was
+        # already red; with every price multiplied, to see which tests are
+        # sensitive to numbers; and against the proposal. New failures become a
+        # draft, and a run that could not produce structured results fails the job
+        # rather than reporting a green it did not earn.
         run: |
           python -m pricing_updater.consumer_checks \
             --tokdash-repo tokdash \
@@ -173,6 +196,10 @@ jobs:
           # Read back rather than assume: if the report is missing or malformed
           # this step fails, and a run that cannot say what it validated does not
           # get to publish anything.
+          #
+          # The checker exits non-zero when pytest refused, aborted collection, or
+          # left a required check file with no records. It does not exit non-zero
+          # because a test disliked the proposal; that is the draft.
           needs_draft="$(python -c 'import json; print(str(json.load(open("validation/consumer_checks.json"))["needs_draft"]).lower())')"
           echo "needs_draft=$needs_draft" >> "$GITHUB_OUTPUT"
           echo "consumer checks need_draft=$needs_draft"

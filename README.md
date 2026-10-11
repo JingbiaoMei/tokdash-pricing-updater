@@ -490,9 +490,27 @@ This test asserts that:
 - Derived (antigravity) models resolve and match their base model's pricing.
 - At least one model per tracked provider resolves.
 
-To get the same split CI makes, run the checker from this repo instead. It prints
-which failures a repricing is allowed to cause and exits non-zero only for the
-structural ones:
+Before anything is published, the proposal has to pass a gate that needs no
+consumer opinion at all. It compares the assembled database with the one it was
+built on, and `diff` and `auto` run it too, so the file a person might `cp` by hand
+is held to the same rules as the one CI would push:
+
+```bash
+PYTHONPATH=src python -m pricing_updater.structural_check \
+  --proposed output/proposals/proposed_pricing_db.json \
+  --tokdash-repo ../tokdash \
+  --json-out /tmp/structural_check.json
+```
+
+It checks the shape, that every entry has its fields and finite non-negative
+prices, that aliases resolve, that nothing in the current database was removed, and
+that no paid input or output price became free. Aliases the current database
+already carried unresolved are left alone: the proposal inherited them.
+
+Tokdash's own checks then run as a second opinion, because they are the earliest
+sign that a price change needs a test update in the same PR. They cannot be the
+gate: one test can assert both that an alias resolves and that a model costs 2.0,
+so its failure says "something is wrong" and not what.
 
 ```bash
 PYTHONPATH=src python -m pricing_updater.consumer_checks \
@@ -500,6 +518,12 @@ PYTHONPATH=src python -m pricing_updater.consumer_checks \
   --proposed output/proposals/proposed_pricing_db.json \
   --json-out /tmp/consumer_checks.json
 ```
+
+It reports failures that are new since the current database, labels the ones a
+price change is a plausible explanation for, and exits non-zero only when the
+checks could not be trusted: a check file that cannot import, one that collects no
+tests, a pytest run that did not finish, or a suite whose fixtures cannot start
+against the database as it already is.
 
 ## Directory structure
 
@@ -543,7 +567,8 @@ tokdash-pricing-updater/
 │   ├── coverage.py             # Which keys the bot can actually move
 │   ├── approval.py             # Interactive + auto review
 │   ├── github_pr.py            # Publish to one bot branch, open or refresh one PR
-│   └── consumer_checks.py      # Split tokdash's checks into structural and price-expectation
+    ├── structural_check.py     # The publication gate: shape, aliases, nothing removed
+    └── consumer_checks.py      # Tokdash's checks as a second opinion, not a verdict
 ├── state/
 │   └── last_seen.json          # Gitignored; staleness tracking across runs
 ├── output/                     # Gitignored; all generated artifacts
@@ -597,15 +622,24 @@ Two workflows live in `.github/workflows/`:
   plan names a different commit, so a proposal from another run cannot ride along.
   The `dry_run` dispatch input stops the run after validation and publishes nothing.
 
-  Validation separates two kinds of consumer failure, because only one of them is a
-  defect. `pricing_updater.consumer_checks` runs tokdash's checks twice: once with
-  every price in the current database multiplied, once with the proposal. Failures
-  the multiplication explains are price expectations, and those publish as a **draft**
-  with the failing test names in the body, so the price change and the test update
-  get reviewed together. Failures it does not explain are structural (an alias that
-  stops resolving, a relationship between two fields that inverts) and nothing is
-  published. Which test is which is measured rather than listed, so a new consumer
-  test needs no edit here; a renamed or missing check file is an error, not a pass.
+  Publication is gated by `pricing_updater.structural_check`, which compares the
+  proposed database with the database at that pinned commit and needs no consumer
+  opinion to do it: shape, per-entry fields, finite non-negative prices, aliases
+  that resolve, nothing removed, no paid price turned free. A malformed database
+  never reaches a PR, draft or otherwise.
+
+  Tokdash's checks then run as a second opinion and route, but never block.
+  `pricing_updater.consumer_checks` runs them three times: as they are, so a test
+  already red is not blamed on the proposal; with every price multiplied, to see
+  which tests are sensitive to numbers; and against the proposal. A new failure
+  opens the PR as a **draft** with the names in the body, so the price change and
+  the test update get reviewed together. It never claims to know why a test failed:
+  one test can assert both that an alias resolves and that a model costs 2.0, and
+  multiplying prices cannot separate those. What it does refuse is a green it did
+  not earn: results come from pytest's exit code and its JUnit records, so a check
+  file that cannot import, one that collects no tests, a run that did not finish, a
+  record that matches no collected test, and a suite whose fixtures cannot start
+  are all errors that stop publication.
 
 Publishing needs a credential that is authorized on the tokdash repo. The updater's
 own `GITHUB_TOKEN` cannot write to another repository, so set `PRICING_BOT_TOKEN`
@@ -666,7 +700,9 @@ against the real tokdash checkout.
 | Family mapping | Official providers list fewer model IDs than OpenRouter (e.g. DeepSeek lists 2, OpenRouter lists 11). `config/official_family_map.yaml` maps versioned variants to their official pricing family via glob patterns. |
 | YAML fallback for SPA pages | Moonshot and Xiaomi official pages are JavaScript SPAs that don't serve pricing in initial HTML. Live adapters attempt to fetch them each run (will start working if SSR is added); YAML config provides the fallback. |
 | Decimal arithmetic | OpenRouter returns per-token prices as strings (`"0.000005"`). Parsing with `Decimal` avoids floating-point drift during the `* 1,000,000` conversion to per-MTok. |
-| Consumer checks are measured, not listed | Tokdash's consumer suite mixes "does this resolve" with "does this cost exactly 2.0". Multiplying every price and seeing what breaks identifies the second group, so a repricing publishes as a draft rather than being blocked forever by a list of test names that would rot. |
+| The gate needs no consumer opinion | A publication decision has to be derivable from the two databases. Tokdash's suite mixes "does this resolve" with "does this cost exactly 2.0" inside single tests, and multiplying prices to sort the failures tells you which tests are sensitive to numbers, never which failure was caused by what. So `structural_check` decides and the consumer suite advises; it was a gate first, and deleting a model through it read as a price expectation. |
+| Structured pytest results, never summary text | Reading `FAILED` lines made a fixture error, an aborted collection, and an empty check file all look like a passing validation. Verdicts come from the exit code and a JUnit record per test, with each required file accounted for, so "nobody asked the consumer" can never be reported as "the consumer agreed". |
+| Judge what the proposal changed | Deletions, newly dangling aliases and prices turned free are the proposal's doing; a defect already shipped in the database it was built on is not. A gate that blocks on inherited quirks blocks everything, which is how gates get switched off. |
 | One run owns the publication artifacts | `proposed_pricing_db.json`, `pr_body.md`, `publish_plan.json` and `base_sha.txt` are cleared before generation. A run that finds nothing to propose otherwise leaves yesterday's proposal next to today's pin, and the publish job reads those files by name. |
 | A rerun can retract a PR's review status | Guards tripping on a rerun put an already-open PR back into draft with `gh pr ready --undo`, and a clean rerun takes a draft out. A proposal the bot no longer trusts should not sit one merge from main. |
 | Adapters publish only what the page printed | The DeepSeek adapter used to fill an absent cache column with 10% of input, which put an invented number in the field reserved for first-party prices and read as a published zero on a free model. An absent field is left absent so the cache heuristic guesses visibly instead. |
