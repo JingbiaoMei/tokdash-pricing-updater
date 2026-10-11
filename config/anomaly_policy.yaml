@@ -1,0 +1,21 @@
+# Publication guards: what the bot may put in a PR, and what it must hold back.
+#
+# The failure these protect against is a broken scraper that reads as a pricing
+# day. A provider changing one price is normal; a run that wants to move 200
+# entries, or that moves one entry by an order of magnitude, means the scraper
+# or the source changed shape.
+
+# Hold the whole run when it wants to propose more changes than this.
+max_changes_per_run: 25
+
+# Hold any single change that moves one price field by more than this percent.
+max_single_field_change_pct: 50
+
+# Fail the run when OpenRouter returns fewer rows than this. A truncated or
+# emptied response must never be the basis for a proposal.
+min_openrouter_rows: 300
+
+# Hold new entries that carry a published zero on input or output. Some of these
+# are genuinely free tiers, and some are a paid model whose price went missing.
+# The bot cannot tell them apart, so a human does.
+hold_explicit_zero: true

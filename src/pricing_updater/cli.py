@@ -4,13 +4,20 @@ Usage:
     python -m pricing_updater scrape   [--tokdash-repo PATH]
     python -m pricing_updater diff     [--tokdash-repo PATH]
     python -m pricing_updater propose  [--tokdash-repo PATH]
-    python -m pricing_updater auto     [--tokdash-repo PATH]  (CI mode)
+    python -m pricing_updater auto     [--tokdash-repo PATH] [--create-pr]
+                                       [--branch bot/pricing-db] [--base main]
+                                       [--labels a,b] [--max-body-rows N]
+                                       [--dry-run]
+
+Artifacts and state default to ./output and ./state; set
+PRICING_UPDATER_OUTPUT_DIR / PRICING_UPDATER_STATE_DIR to move them.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections import OrderedDict
 from datetime import date
@@ -26,6 +33,22 @@ import yaml
 def _project_root() -> Path:
     """Return the project root (parent of src/)."""
     return Path(__file__).resolve().parent.parent.parent
+
+
+def _output_dir() -> Path:
+    """Where generated artifacts go.
+
+    Overridable so a run against a read-only checkout, a CI workspace, or a test
+    does not need the repository itself to be writable.
+    """
+    override = os.environ.get("PRICING_UPDATER_OUTPUT_DIR")
+    return Path(override) if override else _project_root() / "output"
+
+
+def _state_dir() -> Path:
+    """Where last_seen state lives. Same override rationale as _output_dir()."""
+    override = os.environ.get("PRICING_UPDATER_STATE_DIR")
+    return Path(override) if override else _project_root() / "state"
 
 
 def _load_yaml(name: str) -> dict:
@@ -61,11 +84,24 @@ def _step_scrape(providers_cfg: dict, policy_cfg: dict, output_dir: Path):
     skip = providers_cfg.get("skip_patterns", [])
 
     raw_path = output_dir / "raw" / f"openrouter_{date.today().isoformat()}.json"
-    print(f"Fetching OpenRouter API...", flush=True)
-    scraped = fetch_openrouter(tracked, skip, save_raw=raw_path)
-    print(f"  -> {len(scraped)} models from tracked providers")
+    print("Fetching OpenRouter API...", flush=True)
+    stats: dict = {}
+    scraped = fetch_openrouter(tracked, skip, save_raw=raw_path, stats=stats)
+    print(
+        f"  -> {len(scraped)} models from tracked providers "
+        f"({stats.get('rows_seen', 0)} rows seen, "
+        f"{stats.get('free_skipped', 0)} free, "
+        f"{stats.get('unpriced_skipped', 0)} unpriced, "
+        f"{stats.get('partial_pricing', 0)} partly priced)"
+    )
 
-    return scraped, tracked
+    return scraped, tracked, stats
+
+
+def _load_anomaly_cfg() -> dict:
+    """Guard thresholds sit apart from pricing policy: they change for
+    operational reasons, not pricing reasons."""
+    return _load_yaml("anomaly_policy.yaml")
 
 
 def _step_canonicalize(scraped, provider_map):
@@ -73,6 +109,36 @@ def _step_canonicalize(scraped, provider_map):
     canonical = canonicalize(scraped, provider_map)
     print(f"  -> {len(canonical)} canonical models")
     return canonical
+
+
+def _step_guards(canonical):
+    """Hold back models the sources never priced, rather than rendering zeros.
+
+    Returns (usable, dropped) where dropped rows are dicts ready for reporting.
+    """
+    from .guards import partition_unpriceable
+
+    usable, dropped = partition_unpriceable(canonical)
+    if dropped:
+        print(f"  -> {len(usable)} priceable, {len(dropped)} unpriceable (not rendered)")
+        for row in dropped[:10]:
+            print(f"     unpriceable: {row['model_id']} ({row['provider']}): {row['reason']}")
+        if len(dropped) > 10:
+            print(f"     ... and {len(dropped) - 10} more")
+    return usable, dropped
+
+
+def _step_provenance(canonical) -> dict:
+    """Per-field source of truth, as a sidecar rather than a DB schema change."""
+    return {
+        m.canonical_id: {
+            "field_sources": m.field_sources,
+            "evidence": m.evidence,
+            "explicit_zero_fields": sorted(m.explicit_zero_fields),
+        }
+        for m in canonical
+        if m.field_sources or m.evidence or m.explicit_zero_fields
+    }
 
 
 def _step_fetch_official(official_cfg):
@@ -188,12 +254,13 @@ def cmd_scrape(args):
     """Fetch from sources and save raw + canonical snapshots."""
     (providers_cfg, aliases_cfg, manual_cfg, derived_cfg,
      policy_cfg, official_cfg, family_map_cfg, fx_cfg) = _load_config()
-    output_dir = _project_root() / "output"
+    output_dir = _output_dir()
 
-    scraped, provider_map = _step_scrape(providers_cfg, policy_cfg, output_dir)
+    scraped, provider_map, stats = _step_scrape(providers_cfg, policy_cfg, output_dir)
     canonical = _step_canonicalize(scraped, provider_map)
     official_prices = _step_fetch_official(official_cfg)
     canonical = _step_policy(canonical, policy_cfg, official_prices, family_map_cfg, fx_cfg)
+    canonical, _dropped = _step_guards(canonical)
 
     # Save canonical snapshot.
     from .render_tokdash_db import _decimal_to_float
@@ -218,15 +285,16 @@ def cmd_diff(args):
     """Scrape, render, and diff against current tokdash pricing_db."""
     (providers_cfg, aliases_cfg, manual_cfg, derived_cfg,
      policy_cfg, official_cfg, family_map_cfg, fx_cfg) = _load_config()
-    output_dir = _project_root() / "output"
-    state_dir = _project_root() / "state"
+    output_dir = _output_dir()
+    state_dir = _state_dir()
 
     current_db = _load_current_db(args.tokdash_repo)
 
-    scraped, provider_map = _step_scrape(providers_cfg, policy_cfg, output_dir)
+    scraped, provider_map, stats = _step_scrape(providers_cfg, policy_cfg, output_dir)
     canonical = _step_canonicalize(scraped, provider_map)
     official_prices = _step_fetch_official(official_cfg)
     canonical = _step_policy(canonical, policy_cfg, official_prices, family_map_cfg, fx_cfg)
+    canonical, _dropped = _step_guards(canonical)
 
     proposed_db = _step_render(
         canonical, manual_cfg, derived_cfg, aliases_cfg, policy_cfg, current_db,
@@ -250,15 +318,16 @@ def cmd_propose(args):
     """Full interactive pipeline: scrape -> diff -> review -> write proposed DB."""
     (providers_cfg, aliases_cfg, manual_cfg, derived_cfg,
      policy_cfg, official_cfg, family_map_cfg, fx_cfg) = _load_config()
-    output_dir = _project_root() / "output"
-    state_dir = _project_root() / "state"
+    output_dir = _output_dir()
+    state_dir = _state_dir()
 
     current_db = _load_current_db(args.tokdash_repo)
 
-    scraped, provider_map = _step_scrape(providers_cfg, policy_cfg, output_dir)
+    scraped, provider_map, stats = _step_scrape(providers_cfg, policy_cfg, output_dir)
     canonical = _step_canonicalize(scraped, provider_map)
     official_prices = _step_fetch_official(official_cfg)
     canonical = _step_policy(canonical, policy_cfg, official_prices, family_map_cfg, fx_cfg)
+    canonical, _dropped = _step_guards(canonical)
 
     proposed_db = _step_render(
         canonical, manual_cfg, derived_cfg, aliases_cfg, policy_cfg, current_db,
@@ -296,18 +365,37 @@ def cmd_propose(args):
 
 
 def cmd_auto(args):
-    """CI mode: scrape -> diff -> auto-approve safe_add -> write + optionally PR."""
+    """CI mode: scrape, diff, guard, then publish one reviewable PR.
+
+    Everything the guards accept goes into the PR diff, additions and repricing
+    alike, so reviewing the diff and merging is the whole job. Anything a guard
+    distrusts is held out of the diff and listed in the body instead. Publication
+    failure is a failed run, never a green one.
+    """
     (providers_cfg, aliases_cfg, manual_cfg, derived_cfg,
      policy_cfg, official_cfg, family_map_cfg, fx_cfg) = _load_config()
-    output_dir = _project_root() / "output"
-    state_dir = _project_root() / "state"
+    from .guards import GuardPolicy
+
+    guard_policy = GuardPolicy.load(_load_anomaly_cfg())
+    output_dir = _output_dir()
+    state_dir = _state_dir()
 
     current_db = _load_current_db(args.tokdash_repo)
 
-    scraped, provider_map = _step_scrape(providers_cfg, policy_cfg, output_dir)
+    scraped, provider_map, stats = _step_scrape(providers_cfg, policy_cfg, output_dir)
+
+    from . import guards
+
+    fatal = guards.check_source_volume(stats, guard_policy)
+    if fatal:
+        for note in fatal:
+            print(f"FATAL: {note}", file=sys.stderr)
+        sys.exit(1)
+
     canonical = _step_canonicalize(scraped, provider_map)
     official_prices = _step_fetch_official(official_cfg)
     canonical = _step_policy(canonical, policy_cfg, official_prices, family_map_cfg, fx_cfg)
+    canonical, dropped = _step_guards(canonical)
 
     proposed_db = _step_render(
         canonical, manual_cfg, derived_cfg, aliases_cfg, policy_cfg, current_db,
@@ -317,43 +405,117 @@ def cmd_auto(args):
         current_db, proposed_db, manual_cfg, derived_cfg, state_dir, policy_cfg,
     )
 
-    if not changes:
-        print("No changes detected. Pricing DB is up to date.")
-        return
+    decisions = guards.classify(changes, guard_policy)
+    proposable = guards.proposable_changes(decisions)
+    held = guards.held_changes(decisions)
+    print(
+        f"  -> {len(proposable)} proposable, {len(held)} held "
+        f"(of {len(changes)} computed)"
+    )
 
-    from .approval import auto_review
-    approved = auto_review(changes)
+    # Evidence a reviewer can check without rerunning anything.
+    from .coverage import build_coverage, summarize, write_coverage
+    from .render_tokdash_db import dump_json
 
-    # Save report regardless.
+    coverage = build_coverage(
+        current_db.get("models", {}),
+        proposed_db.get("models", {}),
+        decisions,
+        dropped,
+        set((manual_cfg.get("models") or {}).keys()),
+        set((derived_cfg.get("models") or {}).keys()),
+    )
+    coverage_path = write_coverage(
+        output_dir / "proposals" / f"coverage_{date.today().isoformat()}.json", coverage,
+    )
+    print(summarize(coverage))
+
+    prov_path = output_dir / "proposals" / f"provenance_{date.today().isoformat()}.json"
+    prov_path.parent.mkdir(parents=True, exist_ok=True)
+    provenance = _step_provenance(canonical)
+    prov_path.write_text(json.dumps(provenance, indent=2) + "\n")
+
     report_path = output_dir / "proposals" / f"diff_{date.today().isoformat()}.md"
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(report)
 
-    if not approved and not [c for c in changes if c.classification != "safe_add"]:
-        print("No actionable changes.")
+    if not changes:
+        print("No changes detected. Pricing DB is up to date.")
         return
 
-    if approved:
-        final_db = _apply_approved(current_db, proposed_db, approved)
-        out_path = output_dir / "proposals" / "proposed_pricing_db.json"
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        from .render_tokdash_db import dump_json
-        out_path.write_text(dump_json(final_db))
-        print(f"Wrote {out_path} ({len(approved)} safe_add changes)")
-
-        if args.create_pr:
-            from .github_pr import create_pr
-            branch = f"pricing-update-{date.today().isoformat()}"
-            create_pr(
-                tokdash_repo=Path(args.tokdash_repo),
-                proposed_db_path=out_path,
-                diff_report=report,
-                branch_name=branch,
-                dry_run=args.dry_run,
-            )
-    else:
-        print("No safe_add changes to apply. Review-required changes in report.")
+    if not proposable:
+        print("Nothing proposable. Findings are held; see the run artifacts.")
+        for decision in held[:10]:
+            print(f"  held: {decision.change.model_id} ({decision.change.change_type}): "
+                  f"{'; '.join(decision.reasons)}")
+        if len(held) > 10:
+            print(f"  ... and {len(held) - 10} more")
         print(f"Report: {report_path}")
+        return
+
+    final_db = _apply_approved(current_db, proposed_db, proposable)
+    out_path = output_dir / "proposals" / "proposed_pricing_db.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(dump_json(final_db))
+    print(f"Wrote {out_path} ({len(proposable)} changes)")
+
+    if not args.create_pr:
+        if held:
+            print(f"{len(held)} changes held for a human; see {report_path}")
+        return
+
+    from .diff import generate_pr_body
+    from .github_pr import BOT_BRANCH, fetch_base, publish
+
+    repo = Path(args.tokdash_repo)
+    try:
+        base_sha = fetch_base(repo, args.base)
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    body = generate_pr_body(
+        decisions,
+        meta={
+            "generated": date.today().isoformat(),
+            "base_sha": base_sha,
+            "run_url": os.environ.get("GITHUB_SERVER_URL", "")
+            and f"{os.environ['GITHUB_SERVER_URL']}/{os.environ.get('GITHUB_REPOSITORY', '')}"
+                   f"/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}",
+            "source_line": (
+                f"Sources: OpenRouter {stats.get('rows_seen', 0)} rows, "
+                f"{len(scraped)} kept, {stats.get('unpriced_skipped', 0)} unpriced."
+            ),
+            "coverage_line": summarize(coverage),
+            "provenance": provenance,
+        },
+        max_rows=args.max_body_rows,
+    )
+
+    body_path = output_dir / "proposals" / "pr_body.md"
+    body_path.write_text(body + "\n")
+    print(f"PR body: {body_path}")
+
+    result = publish(
+        tokdash_repo=repo,
+        proposed_db_path=out_path,
+        body=body,
+        title=f"Pricing DB update ({date.today().isoformat()})",
+        branch=args.branch,
+        base=args.base,
+        labels=[s for s in args.labels.split(",") if s] if args.labels else None,
+        dry_run=args.dry_run,
+        base_sha=base_sha,
+    )
+
+    for note in result.warnings:
+        print(f"WARNING: {note}", file=sys.stderr)
+
+    if not result.ok:
+        print(f"ERROR: publication failed: {result.detail}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"{result.action}: {result.pr_url or result.detail}")
 
 
 # ---------------------------------------------------------------------------
@@ -512,9 +674,16 @@ def main():
     sub.add_parser("diff", help="Scrape and show diff against current DB")
     sub.add_parser("propose", help="Interactive: scrape, diff, review, write proposal")
 
-    auto_p = sub.add_parser("auto", help="CI mode: scrape, diff, auto-approve safe_add")
-    auto_p.add_argument("--create-pr", action="store_true", help="Open a PR on tokdash")
-    auto_p.add_argument("--dry-run", action="store_true", help="Print PR commands only")
+    auto_p = sub.add_parser(
+        "auto",
+        help="CI mode: scrape, diff, guard, and publish one reviewable PR",
+    )
+    auto_p.add_argument("--create-pr", action="store_true", help="Open or refresh the bot PR")
+    auto_p.add_argument("--dry-run", action="store_true", help="Fetch and plan, publish nothing")
+    auto_p.add_argument("--branch", default="bot/pricing-db", help="Bot-owned branch to publish")
+    auto_p.add_argument("--base", default="main", help="Branch the PR targets")
+    auto_p.add_argument("--labels", default="", help="Comma-separated labels, best-effort")
+    auto_p.add_argument("--max-body-rows", type=int, default=60, help="Rows per PR body table")
 
     args = parser.parse_args()
 

@@ -255,3 +255,143 @@ def load_last_seen(path: Path) -> dict[str, dict]:
 def save_last_seen(path: Path, data: dict[str, dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+
+
+def generate_pr_body(
+    decisions,
+    meta: dict | None = None,
+    max_rows: int = 60,
+    max_chars: int = 40000,
+) -> str:
+    """Shape the PR body so reviewing it is a two-minute read.
+
+    Args:
+        decisions: guards.Decision list, duck-typed here to keep the module
+            free of an import cycle. Each row exposes .change, .proposable and
+            .reasons.
+        meta: run context (generated, base_sha, run_url, source_line,
+            coverage_line, stats).
+        max_rows: rows per table before truncating to the artifact.
+        max_chars: hard ceiling, well inside GitHub's 65,536 character body cap.
+    """
+    meta = meta or {}
+    provenance = meta.get("provenance") or {}
+    proposable = [d for d in decisions if d.proposable]
+    held = [d for d in decisions if not d.proposable]
+
+    additions = [d.change for d in proposable if d.change.change_type in ("new", "alias_add")]
+    repricing = [d.change for d in proposable if d.change.change_type == "price_change"]
+
+    lines: list[str] = ["## Pricing DB update", ""]
+
+    context = []
+    if meta.get("generated"):
+        context.append(f"Generated {meta['generated']}")
+    if meta.get("base_sha"):
+        context.append(f"against tokdash `main` at `{str(meta['base_sha'])[:7]}`")
+    if meta.get("run_url"):
+        context.append(f"[run]({meta['run_url']})")
+    if context:
+        lines += [" ".join(context), ""]
+
+    if meta.get("source_line"):
+        lines += [meta["source_line"], ""]
+    if meta.get("coverage_line"):
+        lines += [meta["coverage_line"], ""]
+
+    lines += [
+        f"**In this diff:** {_count(len(additions), 'addition')}, "
+        f"{_count(len(repricing), 'repricing')}. **Held back:** {len(held)}.",
+        "",
+    ]
+
+    if additions:
+        lines += [
+            f"### Additions ({len(additions)})",
+            "",
+            "| Model | Provider | In / Out per MTok | Source |",
+            "|---|---|---|---|",
+        ]
+        lines += _rows(additions, _addition_row, max_rows)
+        lines.append("")
+
+    if repricing:
+        lines += [
+            f"### Repricing ({len(repricing)})",
+            "",
+            "| Model | Field | Old | New | Source |",
+            "|---|---|---|---|---|",
+        ]
+        lines += _rows(repricing, lambda c: _repricing_rows(c, provenance), max_rows)
+        lines.append("")
+
+    if held:
+        lines += [
+            f"### Held back, not in this diff ({len(held)})",
+            "",
+            "| Model | Change | Why held |",
+            "|---|---|---|",
+        ]
+        lines += _rows(held, _held_row, max_rows)
+        lines.append("")
+
+    lines += [
+        "### Scope",
+        "",
+        "This PR changes `src/tokdash/pricing_db.json` and nothing else.",
+        "Merging is a human call; the bot never merges.",
+        "",
+    ]
+
+    body = "\n".join(lines)
+    if len(body) > max_chars:
+        body = body[:max_chars] + "\n\n... truncated; full detail is in the run artifacts.\n"
+    return body
+
+
+def _rows(items, render_row, max_rows: int) -> list[str]:
+    rows: list[str] = []
+    for item in items[:max_rows]:
+        rows.extend(render_row(item))
+    remaining = len(items) - max_rows
+    if remaining > 0:
+        rows.append(f"| ... | and {remaining} more | see run artifacts |")
+    return rows
+
+
+def _addition_row(change) -> list[str]:
+    entry = change.new_entry or {}
+    if change.change_type == "alias_add":
+        return [f"| `{change.model_id}` | alias | -> `{entry.get('target', '?')}` | aliases |"]
+    return [
+        f"| `{change.model_id}` | {entry.get('provider', '?')} "
+        f"| {entry.get('input', '?')} / {entry.get('output', '?')} "
+        f"| {entry.get('source', '')} |"
+    ]
+
+
+def _repricing_rows(change, provenance: dict | None = None) -> list[str]:
+    entry = change.new_entry or {}
+    provenance = provenance or {}
+    sources = (provenance.get(change.model_id) or {}).get("field_sources", {})
+    rows = []
+    for fld in change.fields_changed:
+        old_v = (change.old_entry or {}).get(fld, "?")
+        new_v = entry.get(fld, "?")
+        # A cache rate that moved only because the input rate moved is arithmetic,
+        # not a published change, and a reviewer should be able to see that.
+        label = fld + " (derived)" if sources.get(fld) == "derived_from_input" else fld
+        rows.append(
+            f"| `{change.model_id}` | {label} | {old_v} | {new_v} | {entry.get('source', '')} |"
+        )
+    return rows or [f"| `{change.model_id}` | - | - | - | |"]
+
+
+def _count(n: int, noun: str) -> str:
+    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
+
+
+def _held_row(decision) -> list[str]:
+    change = decision.change
+    reason = "; ".join(decision.reasons) or "held"
+    return [f"| `{change.model_id}` | {change.change_type} | {reason} |"]
