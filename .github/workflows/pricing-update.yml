@@ -5,11 +5,17 @@ name: Pricing update
 # consumer checks, and nothing merges here.
 
 on:
-  schedule:
-    # Tue and Thu 06:00 UTC. Twice weekly keeps the review queue short without
-    # going stale; GitHub can delay scheduled runs, so manual dispatch is the
-    # real path, not a courtesy.
-    - cron: '0 6 * * 2,4'
+  # Kept off, deliberately, until two things are settled: the guard thresholds,
+  # which currently hold every computed change so a scheduled run is green and
+  # publishes nothing, and the source-precedence question in issue #202. Until
+  # then an unattended run cannot produce a mergeable proposal, and a schedule that
+  # cannot do its job is noise on a Tuesday morning. Un-comment to enable; the
+  # dispatch path below is the one to use meanwhile. Scheduled runs only execute
+  # from the default branch, can be delayed or coalesced, and stop after 60 days
+  # of repo inactivity.
+  #
+  # schedule:
+  #   - cron: '0 6 * * 2,4'
   workflow_dispatch:
     inputs:
       dry_run:

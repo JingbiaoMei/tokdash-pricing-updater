@@ -585,7 +585,10 @@ Two workflows live in `.github/workflows/`:
 - `ci.yml` runs the suite on 3.10 and 3.12 and **fails on any skipped test**, because
   a clean clone used to skip ten of them silently when their fixture lived in
   gitignored `output/`.
-- `pricing-update.yml` runs Tuesday and Thursday, plus on demand, as three jobs:
+- `pricing-update.yml` runs on demand today; the Tuesday/Thursday schedule is
+  written but commented out, because an unattended run cannot yet produce a
+  mergeable proposal (see *What is not finished*, item 1) and a schedule that
+  cannot do its job is noise. It runs as three jobs:
   **generate**, **validate** (tokdash's own pricing checks run against the proposed
   database before anything is pushed), and **publish**. All three work on one base
   commit: generate records the SHA it read, and validate and publish check that SHA
