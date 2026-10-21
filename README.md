@@ -610,7 +610,7 @@ Two workflows live in `.github/workflows/`:
 - `ci.yml` runs the suite on 3.10 and 3.12 and **fails on any skipped test**, because
   a clean clone used to skip ten of them silently when their fixture lived in
   gitignored `output/`.
-- `pricing-update.yml` runs **Tuesday and Friday at 06:17 UTC**, and also on
+- `pricing-update.yml` runs **Tuesday and Friday at 00:00 UTC**, and also on
   demand through manual dispatch. It runs on **GitHub-hosted Ubuntu runners**, so your local machine
   does not need to be running. It runs as three jobs:
   **generate**, **validate** (tokdash's own pricing checks run against the proposed
@@ -666,7 +666,7 @@ inactivity, which is why `workflow_dispatch` is a first-class path.
    with no eligible new models correctly produces no PR.
 4. Run once with `dry_run` unchecked. Review the resulting Tokdash PR and its CI;
    the bot only updates its own proposal branch and never merges it.
-5. The Tuesday/Friday 06:17 UTC schedule is enabled in
+5. The Tuesday/Friday 00:00 UTC schedule is enabled in
    `.github/workflows/pricing-update.yml`. Review the first real additions PR
    and its CI before merging; a pilot with no eligible models does not exercise
    an actual branch push or PR creation.

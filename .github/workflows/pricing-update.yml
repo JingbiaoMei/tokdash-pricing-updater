@@ -5,11 +5,12 @@ name: Add new model prices
 # consumer checks, and nothing merges here.
 
 on:
-  # Tuesday and Friday at 06:17 UTC. Avoid the busy start of the hour.
+  # Tuesday and Friday at 00:00 UTC. The top of the hour is the busiest minute
+  # for the scheduled queue, so a dispatch can land late but on the right day.
   # The bot only adds new models; existing prices and aliases are preserved.
   # Schedules run from the default branch and can stop after 60 inactive days.
   schedule:
-    - cron: '17 6 * * 2,5'
+    - cron: '0 0 * * 2,5'
   workflow_dispatch:
     inputs:
       dry_run:
