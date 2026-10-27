@@ -53,9 +53,9 @@ from pathlib import Path
 
 DB_REL_PATH = Path("src") / "tokdash" / "pricing_db.json"
 DEFAULT_CHECKS = (
-    "tests/test_pricing_db_contract.py",
-    "tests/test_model_name_normalization.py",
-    "tests/test_pricing_normalization.py",
+    "tests/pricing/test_pricing_db_contract.py",
+    "tests/pricing/test_model_name_normalization.py",
+    "tests/pricing/test_pricing_normalization.py",
 )
 # Enough to move every pinned number off its literal, small enough that rounding
 # cannot be mistaken for a price the test would still accept.

@@ -404,9 +404,9 @@ def test_the_command_passes_a_draft_and_fails_an_unvalidated_run(tokdash_like, t
 def test_the_default_checks_are_the_consumers_release_safe_trio():
     """The trio tokdash documents as its release-safe pricing checks."""
     assert DEFAULT_CHECKS == (
-        "tests/test_pricing_db_contract.py",
-        "tests/test_model_name_normalization.py",
-        "tests/test_pricing_normalization.py",
+        "tests/pricing/test_pricing_db_contract.py",
+        "tests/pricing/test_model_name_normalization.py",
+        "tests/pricing/test_pricing_normalization.py",
     )
 
 
