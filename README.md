@@ -94,7 +94,7 @@ cp output/proposals/proposed_pricing_db.json ../tokdash/src/tokdash/pricing_db.j
 
 # 3. Verify nothing broke.
 cd ../tokdash
-python -m pytest tests/test_pricing_db_contract.py -v
+python -m pytest tests/pricing/test_pricing_db_contract.py -v
 
 # 4. Commit in tokdash when satisfied.
 git add src/tokdash/pricing_db.json
@@ -481,7 +481,7 @@ contract test:
 
 ```bash
 cd ../tokdash
-python -m pytest tests/test_pricing_db_contract.py -v
+python -m pytest tests/pricing/test_pricing_db_contract.py -v
 ```
 
 This test asserts that:
@@ -600,7 +600,7 @@ python -m pytest tests/ -v
 
 # Consumer contract test (requires tokdash checkout at ../tokdash).
 cd ../tokdash
-python -m pytest tests/test_pricing_db_contract.py -v
+python -m pytest tests/pricing/test_pricing_db_contract.py -v
 ```
 
 ## CI integration (GitHub Actions)
